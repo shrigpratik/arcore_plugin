@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Recording state -->
+    <item android:state_selected="true">
+        <shape android:shape="oval">
+            <solid android:color="#E53935" /> <!-- Bright red -->
+            <size android:width="56dp" android:height="56dp" />
+            <stroke android:width="3dp" android:color="#FFFFFF" />
+        </shape>
+    </item>
+    <!-- Pressed state -->
+    <item android:state_pressed="true">
+        <shape android:shape="oval">
+            <solid android:color="#D32F2F" /> <!-- Darker red when pressed -->
+            <size android:width="56dp" android:height="56dp" />
+            <stroke android:width="2dp" android:color="#FFFFFF" />
+        </shape>
+    </item>
+    <!-- Default state -->
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#F44336" /> <!-- Red color -->
+            <size android:width="56dp" android:height="56dp" />
+            <stroke android:width="2dp" android:color="#FFFFFF" />
+        </shape>
+    </item>
+</selector> 

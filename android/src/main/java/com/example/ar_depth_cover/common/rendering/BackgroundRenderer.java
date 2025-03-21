@@ -19,11 +19,14 @@ import android.content.Context;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
 import com.google.ar.core.Coordinates2d;
 import com.google.ar.core.Frame;
+import com.google.ar.core.Session;
+import com.google.ar.core.exceptions.CameraNotAvailableException;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -41,36 +44,27 @@ public class BackgroundRenderer {
   private static final String TAG = BackgroundRenderer.class.getSimpleName();
 
   // Shader names.
-  private static final String CAMERA_VERTEX_SHADER_NAME = "shaders/screenquad.vert";
-  private static final String CAMERA_FRAGMENT_SHADER_NAME = "shaders/screenquad.frag";
-  private static final String DEPTH_VISUALIZER_VERTEX_SHADER_NAME =
-      "shaders/background_show_depth_color_visualization.vert";
-  private static final String DEPTH_VISUALIZER_FRAGMENT_SHADER_NAME =
-      "shaders/background_show_depth_color_visualization.frag";
+  private static final String VERTEX_SHADER_NAME = "shaders/screenquad.vert";
+  private static final String FRAGMENT_SHADER_NAME = "shaders/screenquad.frag";
 
   private static final int COORDS_PER_VERTEX = 2;
   private static final int TEXCOORDS_PER_VERTEX = 2;
   private static final int FLOAT_SIZE = 4;
 
-  private FloatBuffer quadCoords;
-  private FloatBuffer quadTexCoords;
+  private FloatBuffer quadVertices;
+  private FloatBuffer quadTexCoord;
+  private FloatBuffer quadTexCoordTransformed;
 
-  private int cameraProgram;
-  private int depthProgram;
+  private int quadProgram;
 
-  private int cameraPositionAttrib;
-  private int cameraTexCoordAttrib;
-  private int cameraTextureUniform;
-  private int cameraTextureId = -1;
-  private boolean suppressTimestampZeroRendering = true;
+  private int quadPositionParam;
+  private int quadTexCoordParam;
+  private int textureId = -1;
 
-  private int depthPositionAttrib;
-  private int depthTexCoordAttrib;
-  private int depthTextureUniform;
-  private int depthTextureId = -1;
+  public BackgroundRenderer() {}
 
   public int getTextureId() {
-    return cameraTextureId;
+    return textureId;
   }
 
   /**
@@ -80,244 +74,145 @@ public class BackgroundRenderer {
    *
    * @param context Needed to access shader source.
    */
-  public void createOnGlThread(Context context, int depthTextureId) throws IOException {
+  public void createOnGlThread(Context context) throws IOException {
     // Generate the background texture.
     int[] textures = new int[1];
     GLES20.glGenTextures(1, textures, 0);
-    cameraTextureId = textures[0];
-    int textureTarget = GLES11Ext.GL_TEXTURE_EXTERNAL_OES;
-    GLES20.glBindTexture(textureTarget, cameraTextureId);
-    GLES20.glTexParameteri(textureTarget, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-    GLES20.glTexParameteri(textureTarget, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-    GLES20.glTexParameteri(textureTarget, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-    GLES20.glTexParameteri(textureTarget, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+    textureId = textures[0];
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
+    GLES20.glTexParameteri(
+        GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(
+        GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(
+        GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(
+        GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
 
     int numVertices = 4;
-    if (numVertices != QUAD_COORDS.length / COORDS_PER_VERTEX) {
+    if (numVertices != 4) {
       throw new RuntimeException("Unexpected number of vertices in BackgroundRenderer.");
     }
 
-    ByteBuffer bbCoords = ByteBuffer.allocateDirect(QUAD_COORDS.length * FLOAT_SIZE);
-    bbCoords.order(ByteOrder.nativeOrder());
-    quadCoords = bbCoords.asFloatBuffer();
-    quadCoords.put(QUAD_COORDS);
-    quadCoords.position(0);
+    ByteBuffer bbVertices = ByteBuffer.allocateDirect(COORDS_PER_VERTEX * numVertices * FLOAT_SIZE);
+    bbVertices.order(ByteOrder.nativeOrder());
+    quadVertices = bbVertices.asFloatBuffer();
+    quadVertices.put(
+        new float[] {
+          -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f,
+        });
+    quadVertices.position(0);
+
+    ByteBuffer bbTexCoords =
+        ByteBuffer.allocateDirect(TEXCOORDS_PER_VERTEX * numVertices * FLOAT_SIZE);
+    bbTexCoords.order(ByteOrder.nativeOrder());
+    quadTexCoord = bbTexCoords.asFloatBuffer();
+    quadTexCoord.put(
+        new float[] {
+          0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,
+        });
+    quadTexCoord.position(0);
 
     ByteBuffer bbTexCoordsTransformed =
-        ByteBuffer.allocateDirect(numVertices * TEXCOORDS_PER_VERTEX * FLOAT_SIZE);
+        ByteBuffer.allocateDirect(TEXCOORDS_PER_VERTEX * numVertices * FLOAT_SIZE);
     bbTexCoordsTransformed.order(ByteOrder.nativeOrder());
-    quadTexCoords = bbTexCoordsTransformed.asFloatBuffer();
+    quadTexCoordTransformed = bbTexCoordsTransformed.asFloatBuffer();
 
-    // Load render camera feed shader.
-    {
-      int vertexShader =
-          ShaderUtil.loadGLShader(TAG, context, GLES20.GL_VERTEX_SHADER, CAMERA_VERTEX_SHADER_NAME);
-      int fragmentShader =
-          ShaderUtil.loadGLShader(
-              TAG, context, GLES20.GL_FRAGMENT_SHADER, CAMERA_FRAGMENT_SHADER_NAME);
+    // Load simple vertex and fragment shaders
+    int vertexShader = ShaderUtil.loadShader(GLES20.GL_VERTEX_SHADER, getVertexShaderString());
+    int fragmentShader = ShaderUtil.loadShader(GLES20.GL_FRAGMENT_SHADER, getFragmentShaderString());
 
-      cameraProgram = GLES20.glCreateProgram();
-      GLES20.glAttachShader(cameraProgram, vertexShader);
-      GLES20.glAttachShader(cameraProgram, fragmentShader);
-      GLES20.glLinkProgram(cameraProgram);
-      GLES20.glUseProgram(cameraProgram);
-      cameraPositionAttrib = GLES20.glGetAttribLocation(cameraProgram, "a_Position");
-      cameraTexCoordAttrib = GLES20.glGetAttribLocation(cameraProgram, "a_TexCoord");
-      ShaderUtil.checkGLError(TAG, "Program creation");
+    quadProgram = GLES20.glCreateProgram();
+    GLES20.glAttachShader(quadProgram, vertexShader);
+    GLES20.glAttachShader(quadProgram, fragmentShader);
+    GLES20.glLinkProgram(quadProgram);
+    GLES20.glUseProgram(quadProgram);
 
-      cameraTextureUniform = GLES20.glGetUniformLocation(cameraProgram, "sTexture");
-      ShaderUtil.checkGLError(TAG, "Program parameters");
-    }
+    ShaderUtil.checkGLError(TAG, "Program creation");
 
-    // Load render depth map shader.
-    {
-      int vertexShader =
-          ShaderUtil.loadGLShader(
-              TAG, context, GLES20.GL_VERTEX_SHADER, DEPTH_VISUALIZER_VERTEX_SHADER_NAME);
-      int fragmentShader =
-          ShaderUtil.loadGLShader(
-              TAG, context, GLES20.GL_FRAGMENT_SHADER, DEPTH_VISUALIZER_FRAGMENT_SHADER_NAME);
+    quadPositionParam = GLES20.glGetAttribLocation(quadProgram, "a_Position");
+    quadTexCoordParam = GLES20.glGetAttribLocation(quadProgram, "a_TexCoord");
 
-      depthProgram = GLES20.glCreateProgram();
-      GLES20.glAttachShader(depthProgram, vertexShader);
-      GLES20.glAttachShader(depthProgram, fragmentShader);
-      GLES20.glLinkProgram(depthProgram);
-      GLES20.glUseProgram(depthProgram);
-      depthPositionAttrib = GLES20.glGetAttribLocation(depthProgram, "a_Position");
-      depthTexCoordAttrib = GLES20.glGetAttribLocation(depthProgram, "a_TexCoord");
-      ShaderUtil.checkGLError(TAG, "Program creation");
-
-      depthTextureUniform = GLES20.glGetUniformLocation(depthProgram, "u_DepthTexture");
-      ShaderUtil.checkGLError(TAG, "Program parameters");
-    }
-
-    this.depthTextureId = depthTextureId;
-  }
-
-  public void createOnGlThread(Context context) throws IOException {
-    createOnGlThread(context, /*depthTextureId=*/ -1);
-  }
-
-  public void suppressTimestampZeroRendering(boolean suppressTimestampZeroRendering) {
-    this.suppressTimestampZeroRendering = suppressTimestampZeroRendering;
+    ShaderUtil.checkGLError(TAG, "Program parameters");
   }
 
   /**
-   * Draws the AR background image. The image will be drawn such that virtual content rendered with
-   * the matrices provided by {@link com.google.ar.core.Camera#getViewMatrix(float[], int)} and
-   * {@link com.google.ar.core.Camera#getProjectionMatrix(float[], int, float, float)} will
-   * accurately follow static physical objects. This must be called <b>before</b> drawing virtual
-   * content.
-   *
-   * @param frame The current {@code Frame} as returned by {@link Session#update()}.
-   * @param debugShowDepthMap Toggles whether to show the live camera feed or latest depth image.
+   * Sets up the camera texture name and draws the background.
    */
-  public void draw(@NonNull Frame frame, boolean debugShowDepthMap) {
-    // If display rotation changed (also includes view size change), we need to re-query the uv
-    // coordinates for the screen rect, as they may have changed as well.
-    if (frame.hasDisplayGeometryChanged()) {
-      frame.transformCoordinates2d(
-          Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
-          quadCoords,
-          Coordinates2d.TEXTURE_NORMALIZED,
-          quadTexCoords);
-    }
-
-    if (frame.getTimestamp() == 0 && suppressTimestampZeroRendering) {
-      // Suppress rendering if the camera did not produce the first frame yet. This is to avoid
-      // drawing possible leftover data from previous sessions if the texture is reused.
+  public void setupTexture(Session session) {
+    if (textureId == -1) {
       return;
     }
-
-    draw(debugShowDepthMap);
-  }
-
-  public void draw(@NonNull Frame frame) {
-    draw(frame, /*debugShowDepthMap=*/ false);
+    
+    // Set up camera texture
+    session.setCameraTextureName(textureId);
   }
 
   /**
-   * Draws the camera image using the currently configured {@link BackgroundRenderer#quadTexCoords}
-   * image texture coordinates.
-   *
-   * <p>The image will be center cropped if the camera sensor aspect ratio does not match the screen
-   * aspect ratio, which matches the cropping behavior of {@link
-   * Frame#transformCoordinates2d(Coordinates2d, float[], Coordinates2d, float[])}.
+   * Draws the camera background using the previously set texture.
+   * This should be called after session.update() to get the latest camera image.
    */
-  public void draw(
-      int imageWidth, int imageHeight, float screenAspectRatio, int cameraToDisplayRotation) {
-    // Crop the camera image to fit the screen aspect ratio.
-    float imageAspectRatio = (float) imageWidth / imageHeight;
-    float croppedWidth;
-    float croppedHeight;
-    if (screenAspectRatio < imageAspectRatio) {
-      croppedWidth = imageHeight * screenAspectRatio;
-      croppedHeight = imageHeight;
-    } else {
-      croppedWidth = imageWidth;
-      croppedHeight = imageWidth / screenAspectRatio;
+  public void draw(Frame frame) {
+    if (textureId == -1) {
+      return;
     }
+    
+    // Update texture coordinates
+    frame.transformDisplayUvCoords(quadTexCoord, quadTexCoordTransformed);
 
-    float u = (imageWidth - croppedWidth) / imageWidth * 0.5f;
-    float v = (imageHeight - croppedHeight) / imageHeight * 0.5f;
-
-    float[] texCoordTransformed;
-    switch (cameraToDisplayRotation) {
-      case 90:
-        texCoordTransformed = new float[] {1 - u, 1 - v, 1 - u, v, u, 1 - v, u, v};
-        break;
-      case 180:
-        texCoordTransformed = new float[] {1 - u, v, u, v, 1 - u, 1 - v, u, 1 - v};
-        break;
-      case 270:
-        texCoordTransformed = new float[] {u, v, u, 1 - v, 1 - u, v, 1 - u, 1 - v};
-        break;
-      case 0:
-        texCoordTransformed = new float[] {u, 1 - v, 1 - u, 1 - v, u, v, 1 - u, v};
-        break;
-      default:
-        throw new IllegalArgumentException("Unhandled rotation: " + cameraToDisplayRotation);
-    }
-
-    // Write image texture coordinates.
-    quadTexCoords.position(0);
-    quadTexCoords.put(texCoordTransformed);
-
-    draw(/*debugShowDepthMap=*/ false);
-  }
-
-  /**
-   * Draws the camera background image using the currently configured {@link
-   * BackgroundRenderer#quadTexCoords} image texture coordinates.
-   */
-  private void draw(boolean debugShowDepthMap) {
-    // Ensure position is rewound before use.
-    quadTexCoords.position(0);
-
-    // No need to test or write depth, the screen quad has arbitrary depth, and is expected
-    // to be drawn first.
+    // Draw camera background
     GLES20.glDisable(GLES20.GL_DEPTH_TEST);
-    GLES20.glDepthMask(false);
-
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
+    GLES20.glUseProgram(quadProgram);
 
-    if (debugShowDepthMap) {
-      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthTextureId);
-      GLES20.glUseProgram(depthProgram);
-      GLES20.glUniform1i(depthTextureUniform, 0);
+    // Set the vertex positions
+    GLES20.glVertexAttribPointer(
+        quadPositionParam, COORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadVertices);
+    
+    // Set the texture coordinates
+    GLES20.glVertexAttribPointer(
+        quadTexCoordParam, TEXCOORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadTexCoordTransformed);
 
-      // Set the vertex positions and texture coordinates.
-      GLES20.glVertexAttribPointer(
-          depthPositionAttrib, COORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadCoords);
-      GLES20.glVertexAttribPointer(
-          depthTexCoordAttrib, TEXCOORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadTexCoords);
-      GLES20.glEnableVertexAttribArray(depthPositionAttrib);
-      GLES20.glEnableVertexAttribArray(depthTexCoordAttrib);
-    } else {
-      GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId);
-      GLES20.glUseProgram(cameraProgram);
-      GLES20.glUniform1i(cameraTextureUniform, 0);
-
-      // Set the vertex positions and texture coordinates.
-      GLES20.glVertexAttribPointer(
-          cameraPositionAttrib, COORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadCoords);
-      GLES20.glVertexAttribPointer(
-          cameraTexCoordAttrib, TEXCOORDS_PER_VERTEX, GLES20.GL_FLOAT, false, 0, quadTexCoords);
-      GLES20.glEnableVertexAttribArray(cameraPositionAttrib);
-      GLES20.glEnableVertexAttribArray(cameraTexCoordAttrib);
-    }
+    // Enable vertex arrays
+    GLES20.glEnableVertexAttribArray(quadPositionParam);
+    GLES20.glEnableVertexAttribArray(quadTexCoordParam);
 
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
 
     // Disable vertex arrays
-    if (debugShowDepthMap) {
-      GLES20.glDisableVertexAttribArray(depthPositionAttrib);
-      GLES20.glDisableVertexAttribArray(depthTexCoordAttrib);
-    } else {
-      GLES20.glDisableVertexAttribArray(cameraPositionAttrib);
-      GLES20.glDisableVertexAttribArray(cameraTexCoordAttrib);
-    }
+    GLES20.glDisableVertexAttribArray(quadPositionParam);
+    GLES20.glDisableVertexAttribArray(quadTexCoordParam);
 
-    // Restore the depth state for further drawing.
-    GLES20.glDepthMask(true);
+    // Restore the depth test
     GLES20.glEnable(GLES20.GL_DEPTH_TEST);
-
-    ShaderUtil.checkGLError(TAG, "BackgroundRendererDraw");
+    
+    ShaderUtil.checkGLError(TAG, "Draw");
   }
-
+  
   /**
-   * (-1, 1) ------- (1, 1)
-   *   |    \           |
-   *   |       \        |
-   *   |          \     |
-   *   |             \  |
-   * (-1, -1) ------ (1, -1)
-   * Ensure triangles are front-facing, to support glCullFace().
-   * This quad will be drawn using GL_TRIANGLE_STRIP which draws two
-   * triangles: v0->v1->v2, then v2->v1->v3.
+   * Returns the vertex shader string for camera background rendering.
    */
-  private static final float[] QUAD_COORDS =
-      new float[] {
-        -1.0f, -1.0f, +1.0f, -1.0f, -1.0f, +1.0f, +1.0f, +1.0f,
-      };
+  private String getVertexShaderString() {
+    return "attribute vec4 a_Position;\n" +
+           "attribute vec2 a_TexCoord;\n" +
+           "varying vec2 v_TexCoord;\n" +
+           "void main() {\n" +
+           "   gl_Position = a_Position;\n" +
+           "   v_TexCoord = a_TexCoord;\n" +
+           "}";
+  }
+  
+  /**
+   * Returns the fragment shader string for camera background rendering.
+   */
+  private String getFragmentShaderString() {
+    return "#extension GL_OES_EGL_image_external : require\n" +
+           "precision mediump float;\n" +
+           "uniform samplerExternalOES u_Texture;\n" +
+           "varying vec2 v_TexCoord;\n" +
+           "void main() {\n" +
+           "    gl_FragColor = texture2D(u_Texture, v_TexCoord);\n" +
+           "}";
+  }
 }

@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /** Shader helper functions. */
-public final class ShaderUtil {
+public class ShaderUtil {
   /**
    * Converts a raw text file, saved as a resource, into an OpenGL ES shader.
    *
@@ -79,22 +79,17 @@ public final class ShaderUtil {
     return loadGLShader(tag, context, type, filename, emptyDefineValuesMap);
   }
 
-  /**
-   * Checks if we've had an error inside of OpenGL ES, and if so what that error is.
-   *
-   * @param label Label to report in case of error.
-   * @throws RuntimeException If an OpenGL error is detected.
-   */
+  /** Checks if we've had an error inside of OpenGL ES, and if so what that error is. */
   public static void checkGLError(String tag, String label) {
     int lastError = GLES20.GL_NO_ERROR;
     // Drain the queue of all errors.
     int error;
     while ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
-      Log.e(tag, label + ": glError " + error);
+      Log.e(tag, label + ": GL error: " + error);
       lastError = error;
     }
     if (lastError != GLES20.GL_NO_ERROR) {
-      throw new RuntimeException(label + ": glError " + lastError);
+      throw new RuntimeException(label + ": GL error: " + lastError);
     }
   }
 
@@ -125,6 +120,55 @@ public final class ShaderUtil {
       }
       return sb.toString();
     }
+  }
+
+  /**
+   * Converts a raw text file into a string.
+   *
+   * @param filename The filename of the asset file to load.
+   * @param context The Android Context to access the resources.
+   * @return The text content of the asset file.
+   */
+  public static String loadAsset(String filename, Context context) throws IOException {
+    InputStream inputStream = context.getAssets().open(filename);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
+    StringBuilder sb = new StringBuilder();
+    String line;
+    while ((line = reader.readLine()) != null) {
+      sb.append(line).append("\n");
+    }
+    reader.close();
+    return sb.toString();
+  }
+
+  /**
+   * Compiles a shader, returning the OpenGL object ID.
+   *
+   * @param type The type of shader (GL_VERTEX_SHADER or GL_FRAGMENT_SHADER).
+   * @param source The shader source code.
+   * @return The shader's OpenGL object ID.
+   */
+  public static int loadShader(int type, String source) {
+    int shader = GLES20.glCreateShader(type);
+    GLES20.glShaderSource(shader, source);
+    GLES20.glCompileShader(shader);
+
+    // Get the compilation status.
+    final int[] compileStatus = new int[1];
+    GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compileStatus, 0);
+
+    // If the compilation failed, delete the shader.
+    if (compileStatus[0] == 0) {
+      Log.e("ShaderUtil", "Error compiling shader: " + GLES20.glGetShaderInfoLog(shader));
+      GLES20.glDeleteShader(shader);
+      shader = 0;
+    }
+
+    if (shader == 0) {
+      throw new RuntimeException("Error creating shader.");
+    }
+
+    return shader;
   }
 
   private ShaderUtil() {}

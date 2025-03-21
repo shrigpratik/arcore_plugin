@@ -1,0 +1,1034 @@
+/*
+ * Copyright 2020 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.example.ar_depth_cover.rawdepth;
+
+import android.app.Activity;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.Intent;
+import android.media.Image;
+import android.media.MediaRecorder;
+import android.net.Uri;
+import android.opengl.GLSurfaceView;
+import android.os.Build;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.widget.Toast;
+
+import com.example.ar_depth_cover.common.samplerender.CameraTextureShader;
+import com.example.ar_depth_cover.common.samplerender.SampleRender;
+
+import com.google.ar.core.Anchor;
+import com.google.ar.core.ArCoreApk;
+import com.google.ar.core.Camera;
+import com.google.ar.core.CameraIntrinsics;
+import com.google.ar.core.Config;
+import com.google.ar.core.Frame;
+import com.google.ar.core.Session;
+import com.google.ar.core.TrackingState;
+import com.google.ar.core.exceptions.CameraNotAvailableException;
+import com.google.ar.core.exceptions.NotYetAvailableException;
+
+import io.flutter.plugin.common.BinaryMessenger;
+import io.flutter.plugin.common.MethodChannel;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.nio.ShortBuffer;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * Renderer for depth data using Google's SampleRender framework.
+ */
+public class SampleDepthRenderer implements SampleRender.Renderer {
+    private static final String TAG = SampleDepthRenderer.class.getSimpleName();
+    private static final String CHANNEL_NAME = "ar_depth_cover/depth_data";
+
+    /**
+     * Interface for listening to recording state changes
+     */
+    public interface RecordingStateListener {
+        void onRecordingStateChanged(boolean isRecording);
+    }
+    
+    // The GL Surface view used for rendering
+    private final GLSurfaceView glSurfaceView;
+    
+    // The application context
+    private final Context context;
+    
+    // The ARCore session
+    private Session session;
+    
+    // Flag to track ARCore installation
+    private boolean installRequested = false;
+    
+    // Flag to track depth data receipt
+    private boolean depthReceived = false;
+    
+    // Lock for thread safety when accessing the Frame
+    private final Object frameInUseLock = new Object();
+    
+    // Timestamp of the last depth data
+    private long depthTimestamp = -1;
+    
+    // Whether to only log depth data (vs visualizing it)
+    private final boolean logDepthOnly;
+    
+    // Shader for camera texture
+    private CameraTextureShader cameraShader;
+    
+    // Buffers for texture coordinates
+    private FloatBuffer texCoordsIn;
+    private FloatBuffer texCoordsOut;
+    
+    // Flutter Method Channel for sending depth data to Flutter
+    private MethodChannel methodChannel;
+    
+    // Binary Messenger to communicate with Flutter
+    private BinaryMessenger binaryMessenger;
+
+    // A reference to the current frame for depth processing
+    private Frame currentFrame;
+    
+    // Video recording components
+    private MediaRecorder mediaRecorder;
+    private boolean isRecording = false;
+    private String videoOutputPath;
+    private static final int RECORDING_DURATION_MS = 5000; // 5 seconds
+    
+    // Handler for main thread operations
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // Recording state listener
+    private RecordingStateListener recordingStateListener;
+
+    /**
+     * Constructs a SampleDepthRenderer with the given context.
+     */
+    public SampleDepthRenderer(GLSurfaceView glSurfaceView, Context context, boolean logDepthOnly) {
+        this.glSurfaceView = glSurfaceView;
+        this.context = context;
+        this.logDepthOnly = logDepthOnly;
+        
+        // Initialize texture coordinate buffers as direct buffers
+        ByteBuffer bbIn = ByteBuffer.allocateDirect(8 * 4); // 8 floats * 4 bytes per float
+        bbIn.order(ByteOrder.nativeOrder());
+        texCoordsIn = bbIn.asFloatBuffer();
+        texCoordsIn.put(new float[] {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f});
+        texCoordsIn.position(0);
+        
+        ByteBuffer bbOut = ByteBuffer.allocateDirect(8 * 4);
+        bbOut.order(ByteOrder.nativeOrder());
+        texCoordsOut = bbOut.asFloatBuffer();
+        
+        // Setup the SampleRender
+        new SampleRender(glSurfaceView, this, context.getAssets());
+    }
+    
+    /**
+     * Set the binary messenger for communication with Flutter
+     */
+    public void setBinaryMessenger(BinaryMessenger messenger) {
+        this.binaryMessenger = messenger;
+        if (messenger != null) {
+            methodChannel = new MethodChannel(messenger, CHANNEL_NAME);
+        }
+    }
+
+    /**
+     * Helper method to get the activity from a context
+     */
+    private Activity getActivity(Context context) {
+        while (context instanceof ContextWrapper) {
+            if (context instanceof Activity) {
+                return (Activity) context;
+            }
+            context = ((ContextWrapper) context).getBaseContext();
+        }
+        return null;
+    }
+
+    @Override
+    public void onSurfaceCreated(SampleRender render) {
+        // Use 90 degrees rotation for clockwise rotation
+        int rotationToTry = 90;
+        
+        Log.d(TAG, "Creating camera shader with rotation: " + rotationToTry);
+        
+        cameraShader = new CameraTextureShader(rotationToTry);
+        
+        // Add explicit error checking after shader creation
+        if (cameraShader == null || cameraShader.getTextureId() <= 0) {
+            Log.e(TAG, "Failed to create camera texture shader or invalid texture ID");
+        } else {
+            Log.d(TAG, "Camera shader created successfully with texture ID: " + cameraShader.getTextureId());
+        }
+    }
+
+    @Override
+    public void onSurfaceChanged(SampleRender render, int width, int height) {
+        render.setViewport(width, height);
+    }
+
+    @Override
+    public void onDrawFrame(SampleRender render) {
+        if (session == null) {
+            return;
+        }
+
+        synchronized (frameInUseLock) {
+            try {
+                // First make sure we have a valid texture
+                if (cameraShader == null) {
+                    Log.e(TAG, "Camera shader is null, recreating");
+                    cameraShader = new CameraTextureShader(90); // Use same rotation as above
+                    return;
+                }
+                
+                // Set the camera texture and update the session
+                int textureId = cameraShader.getTextureId();
+                if (textureId <= 0) {
+                    Log.e(TAG, "Invalid texture ID: " + textureId);
+                    return;
+                }
+                
+                // Set texture name before session update
+                session.setCameraTextureName(textureId);
+                
+                // Update session to get latest frame
+                Frame frame;
+                try {
+                    frame = session.update();
+                } catch (Exception e) {
+                    Log.e(TAG, "Exception updating session", e);
+                    return;
+                }
+                
+                // Store reference to current frame for manual processing
+                currentFrame = frame;
+                
+                // Reset the positions of the texture coordinate buffers
+                texCoordsIn.clear();
+                texCoordsIn.put(new float[] {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f});
+                texCoordsIn.position(0);
+                
+                texCoordsOut.clear();
+                texCoordsOut.position(0);
+                
+                // Try to transform texture coordinates
+                boolean validCoords = false;
+                try {
+                    frame.transformDisplayUvCoords(texCoordsIn, texCoordsOut);
+                    
+                    // Check if we got NaN values
+                    texCoordsOut.position(0);
+                    boolean hasNaN = false;
+                    for (int i = 0; i < 8 && i < texCoordsOut.capacity(); i++) {
+                        float val = texCoordsOut.get();
+                        if (Float.isNaN(val)) {
+                            hasNaN = true;
+                            break;
+                        }
+                    }
+                    
+                    if (hasNaN) {
+                        Log.w(TAG, "Detected NaN values in transformed texture coordinates");
+                    } else {
+                        validCoords = true;
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Exception transforming UV coordinates", e);
+                }
+                
+                // If we didn't get valid transformed coordinates, use default coordinates
+                if (!validCoords) {
+                    Log.d(TAG, "Using default texture coordinates instead of transformed ones");
+                    texCoordsOut.clear();
+                    
+                    // Coordinates for 90 degrees clockwise rotation
+                    float[] fallbackCoords = {
+                        1.0f, 1.0f,  // bottom-left rotated 90° clockwise
+                        0.0f, 1.0f,  // top-left rotated 90° clockwise
+                        1.0f, 0.0f,  // bottom-right rotated 90° clockwise
+                        0.0f, 0.0f   // top-right rotated 90° clockwise
+                    };
+                    
+                    texCoordsOut.put(fallbackCoords);
+                    texCoordsOut.position(0);
+                } else {
+                    // Reset position after NaN check
+                    texCoordsOut.position(0);
+                }
+                
+                // Update shader texture coordinates
+                cameraShader.updateTextureCoordinates(texCoordsOut);
+                
+                // Clear the render target with black background
+                render.clear(0f, 0f, 0f, 1f);
+                
+                // Draw camera background
+                cameraShader.draw();
+                
+                // Process depth data if camera is tracking
+                Camera camera = frame.getCamera();
+                if (camera.getTrackingState() == TrackingState.TRACKING) {
+                    // Uncomment if you want to process depth data every frame
+                    // processDepthData(frame);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Exception on the OpenGL thread", e);
+            }
+        }
+    }
+
+    /**
+     * Process depth data manually when called (e.g., from button click)
+     * This method is intended to be called from outside the GL thread
+     */
+    public void processDepthDataManually() {
+        synchronized (frameInUseLock) {
+            if (session == null) {
+                Log.e(TAG, "Cannot process depth data: session is null");
+                return;
+            }
+            
+            try {
+                if (currentFrame != null) {
+                    Camera camera = currentFrame.getCamera();
+                    if (camera.getTrackingState() == TrackingState.TRACKING) {
+                        Log.d(TAG, "Processing depth data manually");
+                        
+                        // Start video recording if not already recording
+                        if (!isRecording) {
+//                            startRecording();
+                        processDepthData(currentFrame);
+    
+                        } else {
+                            Log.w(TAG, "Already recording, ignoring record request");
+                        }
+                    } else {
+                        Log.w(TAG, "Cannot process depth data: camera not tracking");
+                    }
+                } else {
+                    Log.w(TAG, "Cannot process depth data: current frame is null");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error processing depth data manually", e);
+            }
+        }
+    }
+
+    /**
+     * Process depth data from the frame
+     */
+    private void processDepthData(Frame frame) {
+        try (Image cameraImage = frame.acquireCameraImage();
+             Image depthImage = frame.acquireRawDepthImage16Bits();
+             Image confidenceImage = frame.acquireRawDepthConfidenceImage()) {
+            
+            if (depthTimestamp != depthImage.getTimestamp()) {
+                depthTimestamp = depthImage.getTimestamp();
+                depthReceived = true;
+                float[] modelMatrix = new float[16];
+                CameraIntrinsics intrinsics = frame.getCamera().getTextureIntrinsics();
+                Image.Plane depthImagePlane = depthImage.getPlanes()[0];
+                final Camera camera = frame.getCamera();
+                Anchor anchor=session.createAnchor(camera.getPose());
+                anchor.getPose().toMatrix(modelMatrix, 0);
+                String imagePath = saveImage(cameraImage);
+                // Set the endianess to ensure we extract depth data in the correct byte order.
+                ShortBuffer depthBuffer =
+                        depthImagePlane.getBuffer().order(ByteOrder.nativeOrder()).asShortBuffer();
+
+                Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
+                ByteBuffer confidenceBuffer = confidenceImagePlane.getBuffer().order(ByteOrder.nativeOrder());
+                // Get the model matrix for the camera
+//                frame.getCamera().getModelMatrix(modelMatrix, 0);
+                
+                // To transform 2D depth pixels into 3D points we retrieve the intrinsic camera parameters
+                // corresponding to the depth miage. See more information about the depth values at
+                // https://developers.google.com/ar/develop/java/depth/overview#understand-depth-values.
+                int[] intrinsicsDimensions = intrinsics.getImageDimensions();
+                int depthWidth = depthImage.getWidth();
+                int depthHeight = depthImage.getHeight();
+                float fx = intrinsics.getFocalLength()[0] * depthWidth / intrinsicsDimensions[0];
+                float fy = intrinsics.getFocalLength()[1] * depthHeight / intrinsicsDimensions[1];
+                float cx =
+                        intrinsics.getPrincipalPoint()[0] * depthWidth / intrinsicsDimensions[0];
+                float cy =
+                        intrinsics.getPrincipalPoint()[1] * depthHeight / intrinsicsDimensions[1];
+                
+                // Convert raw depth images to depth in meters
+                FloatBuffer depthInMeters = convertRawDepthImageToMeters(depthImage, confidenceImage);
+                
+                // For a large depth map, consider downsampling
+                List<Float> sampledDepth = new ArrayList<>();
+                int stride = 1; // Adjust based on your needs
+                
+                for (int i = 0; i < depthInMeters.capacity(); i += stride) {
+                    sampledDepth.add(depthInMeters.get(i));
+                }
+                
+                // Log depth point buffer info
+                Log.d(TAG, "Depth 3D points received - capacity: " + sampledDepth.size() + 
+                      ", number of points: " + sampledDepth.size());
+                
+                // Send the depth data to Flutter
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    sendCompleteDepthDataToFlutter(
+                        sampledDepth.stream().mapToDouble(Float::doubleValue).toArray(),
+                        intrinsicsDimensions,
+                        depthWidth,
+                        depthHeight,
+                        fx,
+                        fy, cx, cy,
+
+                        confidenceImage,
+                            imagePath,
+                        depthTimestamp
+                    );
+                }
+            } else {
+                Log.d(TAG, "Skipping depth processing - same timestamp as before: " + depthTimestamp);
+            }
+        } catch (NotYetAvailableException e) {
+            // Depth is not available yet
+            Log.w(TAG, "Depth data not yet available");
+        } catch (Exception e) {
+            Log.e(TAG, "Error processing depth data", e);
+        }
+    }
+
+    /**
+     * Send both 2D depth data, 3D points, and raw images to Flutter via the method channel
+     */
+    private void sendCompleteDepthDataToFlutter(
+            double[] depthArray,
+            int[] intrinsicsDimensions,
+            int depthWidth,
+            int depthHeight,
+            float fx,
+            float fy,
+            float cx,
+            float cy,
+            Image confidenceImage,
+            String cameraImagePath,
+            long timestamp) {
+            
+        if (methodChannel == null) {
+            Log.w(TAG, "Method channel not available to send depth data");
+            return;
+        }
+        
+        try {
+            // Create a map with all the depth data
+            Map<String, Object> combinedData = new HashMap<>();
+            combinedData.put("timestamp", timestamp);
+            
+            // Add 2D depth data
+            combinedData.put("intrinsicsWidth", intrinsicsDimensions[0]);
+            combinedData.put("intrinsicsHeight", intrinsicsDimensions[1]);
+            combinedData.put("depthWidth", depthWidth);
+            combinedData.put("depthHeight", depthHeight);
+            combinedData.put("focalLengthX", fx);
+            combinedData.put("focalLengthY", fy);
+            combinedData.put("principalPointX", cx);
+            combinedData.put("principalPointY", cy);
+            combinedData.put("depthImage", depthArray);
+            combinedData.put("imagePath", cameraImagePath);
+            addRawImageDataToMap(combinedData, "confidenceImage", confidenceImage);
+
+            // Sample the 2D depth data
+            final int SAMPLE_STRIDE_2D = 10; // Increase stride to reduce data size
+            
+            // Flutter method channel doesn't support 2D arrays, so we'll convert to Lists
+//            List<List<Integer>> depthPointsList = new ArrayList<>();
+//
+//            // Sample and add depth values as Lists of [x, y, depth]
+//            for (int y = 0; y < depthHeight; y += SAMPLE_STRIDE_2D) {
+//                for (int x = 0; x < depthWidth; x += SAMPLE_STRIDE_2D) {
+//                    int index = y * depthWidth + x; // Original buffer index
+//
+//                    if (index < depthBuffer.capacity()) {
+//                        List<Integer> point = new ArrayList<>();
+//                        point.add(x);
+//                        point.add(y);
+//                        point.add((int)depthBuffer.get(index));
+//                        depthPointsList.add(point);
+//                    }
+//                }
+//            }
+//
+//            // Add the 2D depth points to the map
+//            combinedData.put("depthPoints", depthPointsList);
+//
+//            // Add 3D points data
+//            int numPoints = pointsBuffer.capacity() / FLOATS_PER_POINT;
+//            combinedData.put("numPoints3d", numPoints);
+//
+//            // Sample the 3D points data to avoid overloading Flutter
+//            final int MAX_POINTS_TO_SEND = 2000;
+//            int stride = Math.max(1, numPoints / MAX_POINTS_TO_SEND);
+//
+//            // Flutter method channel doesn't support 3D arrays, so convert to Lists
+//            List<List<Float>> points3dList = new ArrayList<>();
+//
+//            // Rewind buffer to read from beginning
+//            pointsBuffer.rewind();
+//
+//            // Sample and add 3D points as Lists of [x, y, z, confidence]
+//            for (int i = 0; i < numPoints; i += stride) {
+//                if ((i * FLOATS_PER_POINT + 3) < pointsBuffer.capacity()) {
+//                    List<Float> point = new ArrayList<>();
+//
+//                    // Skip to the correct position
+//                    pointsBuffer.position(i * FLOATS_PER_POINT);
+//
+//                    // Add X, Y, Z coordinates and confidence
+//                    point.add(pointsBuffer.get()); // X
+//                    point.add(pointsBuffer.get()); // Y
+//                    point.add(pointsBuffer.get()); // Z
+//                    point.add(pointsBuffer.get()); // Confidence
+//
+//                    points3dList.add(point);
+//                }
+//            }
+//
+//            // Add the 3D points to the map
+//            combinedData.put("points3d", points3dList);
+//
+            // Add raw image data
+//            addRawImageDataToMap(combinedData, "depthImage", depthImage);
+
+
+            
+            // Send the combined data to Flutter
+            Activity activity = getActivity(context);
+            if (activity != null) {
+                activity.runOnUiThread(() -> {
+                    try {
+                        methodChannel.invokeMethod("onDepthDataReceived", combinedData);
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error sending complete depth data to Flutter", e);
+                    }
+                });
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error processing complete depth data", e);
+        }
+    }
+    
+    /**
+     * Helper to add raw image data to the map
+     */
+    private void addRawImageDataToMap(Map<String, Object> map, String key, Image image) {
+        try {
+            Map<String, Object> imageData = new HashMap<>();
+            Log.d(key, image.toString());
+            imageData.put("width", image.getWidth());
+            imageData.put("height", image.getHeight());
+            imageData.put("format", image.getFormat());
+            Log.d(key + " format", String.valueOf(image.getFormat()));
+            
+            List<Map<String, Object>> planes = new ArrayList<>();
+            
+            for (int i = 0; i < image.getPlanes().length; i++) {
+                Image.Plane plane = image.getPlanes()[i];
+                ByteBuffer buffer = plane.getBuffer();
+                
+                // Create a copy of the buffer since the original buffer may be invalid after this method returns
+                ByteBuffer copy = ByteBuffer.allocate(buffer.capacity());
+                copy.order(buffer.order()); // Match the byte order
+                
+                // Make sure we read from the beginning of the original buffer
+                buffer.rewind();
+                copy.put(buffer);
+                copy.rewind();
+                
+                // Convert to byte array for sending through the method channel
+                byte[] bytes = new byte[copy.remaining()];
+                copy.get(bytes);
+                
+                Map<String, Object> planeData = new HashMap<>();
+                planeData.put("bytesPerPixel", plane.getPixelStride());
+                planeData.put("bytesPerRow", plane.getRowStride());
+                planeData.put("data", bytes);
+                
+                planes.add(planeData);
+            }
+            
+            imageData.put("planes", planes);
+            map.put(key, imageData);
+            
+            Log.d(TAG, "Added " + key + " data: " + image.getWidth() + "x" + image.getHeight() + 
+                  ", " + planes.size() + " planes");
+        } catch (Exception e) {
+            Log.e(TAG, "Error adding " + key + " data to map", e);
+        }
+    }
+
+    public static final int FLOATS_PER_POINT = 4; // X,Y,Z,confidence.
+    /**
+     * Converts the raw depth image to depth values in meters
+     * @param depth The depth image
+     * @param confidence The confidence image
+     * @return A FloatBuffer containing depth values in meters for each pixel
+     */
+    private static FloatBuffer convertRawDepthImageToMeters(Image depth, Image confidence) {
+        // Java uses big endian so change the endianness to ensure
+        // that the depth data is in the correct byte order.
+        final Image.Plane depthImagePlane = depth.getPlanes()[0];
+        ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
+        ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
+        depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        while (depthByteBufferOriginal.hasRemaining()) {
+            depthByteBuffer.put(depthByteBufferOriginal.get());
+        }
+        depthByteBuffer.rewind();
+        ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
+
+        // Get confidence data
+        final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
+        ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
+        ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
+        confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        while (confidenceBufferOriginal.hasRemaining()) {
+            confidenceBuffer.put(confidenceBufferOriginal.get());
+        }
+        confidenceBuffer.rewind();
+
+        // Get dimensions
+        int depthWidth = depth.getWidth();
+        int depthHeight = depth.getHeight();
+        
+        // Create output buffer for depth in meters
+        FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
+        
+        // Convert each depth value from millimeters to meters
+        for (int y = 0; y < depthHeight; y++) {
+            for (int x = 0; x < depthWidth; x++) {
+                int idx = y * depthWidth + x;
+                int depthMillimeters = depthBuffer.get(idx);
+                
+                // Get confidence value
+                byte confidencePixelValue = confidenceBuffer.get(
+                    y * confidenceImagePlane.getRowStride() + x * confidenceImagePlane.getPixelStride());
+                float confidenceNormalized = ((float) (confidencePixelValue & 0xff)) / 255.0f;
+                
+               depthMeters.put(idx, depthMillimeters / 1000.0f);}
+            }
+
+        
+        depthMeters.rewind();
+        return depthMeters;
+    }
+    
+    /**
+     * Initialize and resume the AR session
+     */
+    public void resume() {
+        if (session == null) {
+            try {
+                Activity activity = getActivity(context);
+                if (activity == null) {
+                    Log.e(TAG, "Cannot start AR session - no activity available");
+                    return;
+                }
+
+                // Check if ARCore is installed
+                switch (ArCoreApk.getInstance().requestInstall(activity, !installRequested)) {
+                    case INSTALL_REQUESTED:
+                        installRequested = true;
+                        return;
+                    case INSTALLED:
+                        break;
+                }
+
+                // Create and configure session
+                session = new Session(context);
+                if (!session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)) {
+                    Log.e(TAG, "This device does not support 3D measuring with raw depth");
+                    // Don't set session to null, let's try to continue with a regular ARCore session
+                }
+                
+                Config config = session.getConfig();
+                config.setDepthMode(Config.DepthMode.RAW_DEPTH_ONLY);
+                
+                // Try updating to different focus modes if applicable
+                config.setFocusMode(Config.FocusMode.AUTO);
+                
+                // Configure light estimation if needed
+                config.setLightEstimationMode(Config.LightEstimationMode.ENVIRONMENTAL_HDR);
+                
+                session.configure(config);
+                
+                // Resume the session
+                try {
+                    session.resume();
+                    Log.d(TAG, "AR session successfully resumed");
+                } catch (CameraNotAvailableException e) {
+                    Log.e(TAG, "Camera not available. Try reopening the app.", e);
+                    session = null;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create AR session", e);
+                session = null;
+            }
+        } else {
+            try {
+                session.resume();
+            } catch (CameraNotAvailableException e) {
+                Log.e(TAG, "Camera not available during resume", e);
+                session = null;
+            }
+        }
+        
+        // Resume the GL surface view
+        if (glSurfaceView != null) {
+            glSurfaceView.onResume();
+        }
+    }
+
+    /**
+     * Pause the AR session
+     */
+    public void pause() {
+        if (session != null) {
+            if (glSurfaceView != null) {
+                glSurfaceView.onPause();
+            }
+            session.pause();
+        }
+    }
+
+    /**
+     * Set a listener for recording state changes
+     */
+    public void setRecordingStateListener(RecordingStateListener listener) {
+        this.recordingStateListener = listener;
+    }
+
+    /**
+     * Saves Image to disk and returns a path for the image on disk
+     *
+     * @return path to the image on disk
+     */
+    private String saveImage(Image imageToSave) throws IOException {
+        // Use app-specific storage which doesn't require special permissions
+        File mediaStorageDir = new File(
+                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+                "ar_images");
+
+        if (!mediaStorageDir.exists()) {
+            if (!mediaStorageDir.mkdirs()) {
+                Log.e(TAG, "Failed to create directory for image storage");
+                // Try fallback to internal storage
+                mediaStorageDir = new File(context.getFilesDir(), "ar_images");
+                if (!mediaStorageDir.exists() && !mediaStorageDir.mkdirs()) {
+                    Log.e(TAG, "Failed to create fallback directory for image storage");
+                    return null;
+                }
+            }
+        }
+
+        // Create unique filename with timestamp
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        File imageFile = new File(mediaStorageDir, "IMG_" + timeStamp + ".jpg");
+        String imageOutputPath = imageFile.getAbsolutePath();
+        
+        // Get the YUV image data
+        Image.Plane[] planes = imageToSave.getPlanes();
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
+        
+        // Get image dimensions
+        int width = imageToSave.getWidth();
+        int height = imageToSave.getHeight();
+        
+        // Get strides and pixel strides for calculating appropriate positions
+        int yRowStride = planes[0].getRowStride();
+        int uvRowStride = planes[1].getRowStride();
+        int uvPixelStride = planes[1].getPixelStride();
+        
+        // Create data arrays for processing
+        byte[] yData = new byte[yBuffer.capacity()];
+        byte[] uData = new byte[uBuffer.capacity()];
+        byte[] vData = new byte[vBuffer.capacity()];
+        
+        // Copy data from buffers
+        yBuffer.get(yData);
+        uBuffer.get(uData);
+        vBuffer.get(vData);
+        
+        // Create bitmap for RGB output
+        // Note: We'll create a bitmap with width and height switched for rotation
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(height, width, android.graphics.Bitmap.Config.ARGB_8888);
+        
+        // Convert YUV to RGB and rotate 90 degrees counterclockwise
+        for (int x = 0; x < width; x++) {
+            for (int y = 0; y < height; y++) {
+                // Calculate indices for YUV data
+                int yIndex = y * yRowStride + x;
+                int uvIndex = (y / 2) * uvRowStride + (x / 2) * uvPixelStride;
+                
+                // Get YUV values
+                int yValue = yData[yIndex] & 0xFF;
+                int uValue = uData[uvIndex] & 0xFF;
+                int vValue = vData[uvIndex] & 0xFF;
+                
+                // Convert YUV to RGB
+                uValue = uValue - 128;
+                vValue = vValue - 128;
+                
+                int r = (int)(yValue + 1.402f * vValue);
+                int g = (int)(yValue - 0.344f * uValue - 0.714f * vValue);
+                int b = (int)(yValue + 1.772f * uValue);
+                
+                // Clamp RGB values
+                r = r > 255 ? 255 : (r < 0 ? 0 : r);
+                g = g > 255 ? 255 : (g < 0 ? 0 : g);
+                b = b > 255 ? 255 : (b < 0 ? 0 : b);
+                
+                // Create ARGB color
+                int color = android.graphics.Color.argb(255, r, g, b);
+                
+                // Set pixel in rotated position (90 degrees counterclockwise)
+                // For 90° counterclockwise rotation: new_x = (height-1-y), new_y = x
+                bitmap.setPixel(height - 1 - y, x, color);
+            }
+        }
+        
+        // Save the bitmap as JPEG
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(imageFile)) {
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out);
+            Log.d(TAG, "Image saved successfully at: " + imageOutputPath);
+        } catch (Exception e) {
+            Log.e(TAG, "Error saving image", e);
+            return null;
+        } finally {
+            // Recycle bitmap to free memory
+            bitmap.recycle();
+        }
+        
+        return imageOutputPath;
+    }
+
+    /**
+     * Starts recording a video for 5 seconds
+     */
+    private void startRecording() {
+        try {
+            Activity activity = getActivity(context);
+            if (activity == null) {
+                Log.e(TAG, "Cannot start recording: no activity available");
+                return;
+            }
+            
+            // Setup video output path
+            File mediaStorageDir = new File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    "ARDepthCover");
+            
+            if (!mediaStorageDir.exists()) {
+                if (!mediaStorageDir.mkdirs()) {
+                    Log.e(TAG, "Failed to create directory for video storage");
+                    return;
+                }
+            }
+            
+            // Create unique filename with timestamp
+            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            videoOutputPath = mediaStorageDir.getPath() + File.separator + "VID_" + timeStamp + ".mp4";
+            
+            // Initialize media recorder on the UI thread
+            activity.runOnUiThread(() -> {
+                try {
+                    if (session == null) {
+                        Log.e(TAG, "Cannot start recording: AR session is null");
+                        return;
+                    }
+                    
+                    // Get display metrics to set appropriate video size
+                    android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+                    activity.getWindowManager().getDefaultDisplay().getMetrics(metrics);
+                    int width = metrics.widthPixels;
+                    int height = metrics.heightPixels;
+                    
+                    // Initialize MediaRecorder
+                    mediaRecorder = new MediaRecorder();
+                    
+                    // Setup for ARCore camera recording
+                    mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                    mediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
+                    mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                    mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                    mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                    mediaRecorder.setVideoEncodingBitRate(10000000);
+                    mediaRecorder.setVideoFrameRate(30);
+                    mediaRecorder.setVideoSize(width, height);
+                    mediaRecorder.setOutputFile(videoOutputPath);
+                    
+                    try {
+                        mediaRecorder.prepare();
+                    } catch (IOException e) {
+                        Log.e(TAG, "Error preparing MediaRecorder", e);
+                        return;
+                    }
+                    
+                    // Start recording
+                    mediaRecorder.start();
+                    isRecording = true;
+                    
+                    // Notify listener that recording has started
+                    if (recordingStateListener != null) {
+                        recordingStateListener.onRecordingStateChanged(true);
+                    }
+                    
+                    Log.d(TAG, "Started recording video to: " + videoOutputPath);
+                    
+                    // Display toast on UI thread
+                    Toast.makeText(context, "Recording video for 5 seconds...", Toast.LENGTH_SHORT).show();
+                    
+                    // Schedule stop recording after 5 seconds
+                    mainHandler.postDelayed(this::stopRecording, RECORDING_DURATION_MS);
+                    
+                    // Send a notification to Flutter about recording started
+                    notifyRecordingStateChange("started", videoOutputPath);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error starting recording", e);
+                    Toast.makeText(context, "Failed to start recording: " + e.getMessage(), 
+                                 Toast.LENGTH_SHORT).show();
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting up video recording", e);
+        }
+    }
+    
+    /**
+     * Stops the current video recording
+     */
+    private void stopRecording() {
+        if (isRecording && mediaRecorder != null) {
+            try {
+                mediaRecorder.stop();
+                mediaRecorder.reset();
+                mediaRecorder.release();
+                mediaRecorder = null;
+                isRecording = false;
+                
+                // Notify listener that recording has stopped
+                if (recordingStateListener != null) {
+                    recordingStateListener.onRecordingStateChanged(false);
+                }
+                
+                Log.d(TAG, "Stopped recording video: " + videoOutputPath);
+                
+                // Notify Flutter about recording completed
+                notifyRecordingStateChange("completed", videoOutputPath);
+                
+                // Make the video available in the gallery
+                addVideoToGallery(videoOutputPath);
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping recording", e);
+            }
+        }
+    }
+    
+    /**
+     * Adds the recorded video to the gallery
+     */
+    private void addVideoToGallery(String videoPath) {
+        Activity activity = getActivity(context);
+        if (activity == null) return;
+        
+        activity.runOnUiThread(() -> {
+            try {
+                // Trigger media scanner to add video to gallery
+                Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                File file = new File(videoPath);
+                Uri contentUri = Uri.fromFile(file);
+                mediaScanIntent.setData(contentUri);
+                activity.sendBroadcast(mediaScanIntent);
+                Log.d(TAG, "Added video to gallery: " + videoPath);
+            } catch (Exception e) {
+                Log.e(TAG, "Error adding video to gallery", e);
+            }
+        });
+    }
+    
+    /**
+     * Notify Flutter about recording state changes
+     */
+    private void notifyRecordingStateChange(String state, String path) {
+        if (methodChannel == null) return;
+        
+        Activity activity = getActivity(context);
+        if (activity == null) return;
+        
+        Map<String, Object> recordingData = new HashMap<>();
+        recordingData.put("state", state);
+        recordingData.put("path", path);
+        
+        activity.runOnUiThread(() -> {
+            methodChannel.invokeMethod("onRecordingStateChanged", recordingData);
+        });
+    }
+
+    /**
+     * Clean up resources used by the renderer
+     */
+    public void close() {
+        if (isRecording) {
+            stopRecording();
+        }
+        
+        if (session != null) {
+            session.close();
+            session = null;
+        }
+        
+        if (cameraShader != null) {
+            cameraShader.release();
+            cameraShader = null;
+        }
+    }
+    
+    /**
+     * Get depth value in millimeters at the specified pixel coordinates
+     */
+    private int getDepthMillimeters(ShortBuffer depthBuffer, int x, int y, int width) {
+        int idx = y * width + x;
+        if (idx >= 0 && idx < depthBuffer.capacity()) {
+            return depthBuffer.get(idx);
+        }
+        return 0;
+    }
+} 

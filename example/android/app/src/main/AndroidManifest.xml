@@ -20,6 +20,8 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+               <meta-data android:name="com.google.ar.core" android:value="required" />
+                <meta-data android:name="com.google.android.ar.API_KEY" android:value="AIzaSyBsDc-ZA_RbzxtkJ4PObBXNcegRqYOhNvc" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
