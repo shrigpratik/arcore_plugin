@@ -139,15 +139,11 @@ public class RawDepthPlatformView extends FrameLayout implements PlatformView {
             
             // Set click listener
             circularButton.setOnClickListener(v -> {
-                Toast.makeText(context, "Processing depth data...", Toast.LENGTH_SHORT).show();
-                Log.d(TAG, "Circular red button clicked - processing depth data");
+                Toast.makeText(context, "Capturing depth data for 5 seconds...", Toast.LENGTH_SHORT).show();
+                Log.d(TAG, "Starting depth capture sequence - taking images every 500ms for 5 seconds");
                 
-                // Call the renderer's processDepthData method
-                if (renderer != null) {
-                    renderer.processDepthDataManually();
-                } else {
-                    Log.e(TAG, "Renderer is null, cannot process depth data");
-                }
+                // Start a capture sequence
+                startCaptureSequence();
             });
             
             // Add the button to our FrameLayout (on top of the GLSurfaceView)
@@ -157,6 +153,51 @@ public class RawDepthPlatformView extends FrameLayout implements PlatformView {
         } catch (Exception e) {
             Log.e(TAG, "Error adding circular red button", e);
         }
+    }
+
+    /**
+     * Starts a sequence that captures depth data every 500ms for 5 seconds
+     */
+    private void startCaptureSequence() {
+        final int CAPTURE_INTERVAL_MS = 250;  // 500ms between captures
+        final int TOTAL_DURATION_MS = 5000;   // 5 seconds total duration
+        final int TOTAL_CAPTURES = TOTAL_DURATION_MS / CAPTURE_INTERVAL_MS;
+        
+        // Create a new thread for the capture sequence
+        new Thread(() -> {
+            try {
+                int captureCount = 0;
+                
+                while (captureCount < TOTAL_CAPTURES) {
+                    // Process depth data on the renderer
+                    if (renderer != null) {
+                        // Must run on UI thread since it might involve GL operations
+                        surfaceView.post(() -> {
+                            renderer.startRecording();
+                        });
+                        
+                        Log.d(TAG, "Captured frame " + (captureCount + 1) + " of " + TOTAL_CAPTURES);
+                        captureCount++;
+                        
+                        // Sleep for the interval
+                        Thread.sleep(CAPTURE_INTERVAL_MS);
+                    } else {
+                        Log.e(TAG, "Renderer is null, cannot process depth data");
+                        break;
+                    }
+                }
+                
+                // Show completion message on UI thread
+                int finalCaptureCount = captureCount;
+                surfaceView.post(() -> {
+                    Toast.makeText(getContext(), "Depth capture complete! Captured " +
+                            finalCaptureCount + " frames.", Toast.LENGTH_SHORT).show();
+                });
+                
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Capture sequence interrupted", e);
+            }
+        }).start();
     }
 
     /**

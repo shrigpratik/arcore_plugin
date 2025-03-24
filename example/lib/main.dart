@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:typed_data';
 import 'gallery_view.dart'; // Import the gallery view
+import 'dart:convert';
 
 void main() {
   runApp(const MyApp());
@@ -113,170 +114,68 @@ class _ARHomePageState extends State<ARHomePage> {
           log('imagePath: ${depthData['imagePath']}', name: 'Received Depth Data');
           log('depthData: ${depthData['depthImage'].length }', name: 'Received Depth Data');
           log('confidenceData: ${depthData['confidenceImage']['planes'][0]['data'].length}', name: 'Received Depth Data');
+          
+      // Save depth and confidence data to a JSON file
+      _saveDepthAndConfidenceData(depthData);
     });
-
-    
-    // Only save images every 2 seconds
-    // final currentTime = DateTime.now().millisecondsSinceEpoch;
-    // if (currentTime - _lastSaveTimestamp > 200) {  // 2000 ms = 2 seconds
-    //   _lastSaveTimestamp = currentTime;
-    //   _saveARImages(depthData);
-    // }
   }
   
-  // Method to save AR images from depth data
-  Future<void> _saveARImages(Map<String, dynamic> depthData) async {
+  // Function to save depth and confidence data
+  Future<void> _saveDepthAndConfidenceData(Map<String, dynamic> depthData) async {
     try {
-      // Check storage permission before attempting to save
-      var storageStatus = await Permission.photos.status;
-      if (!storageStatus.isGranted) {
-        // storageStatus = await Permission.storage.request();
-        if (!storageStatus.isGranted) {
-          log('Storage permission not granted', name: 'ImageSaver');
-          return;
-        }
+      // Get the image path and extract a filename base
+      String? imagePath = depthData['imagePath'];
+      if (imagePath == null) {
+        log('Cannot save data: Image path is null', name: 'Save Data Error');
+        return;
       }
+      log(imagePath, name: "Data Saved");
+      // Create a filename based on the image path
+      String baseFilename = imagePath.split('/').last.split('.').first;
+      // Get the directory path by removing the last component (filename)
+      String directoryPath = imagePath.split('/').sublist(0, imagePath.split('/').length - 1).join('/');
+      String jsonFilename = '${baseFilename}_depth_data.json';
       
-      // Extract images from depth data and convert to Uint8List
-      final depthImage = _convertToUint8List(depthData['depthImage']);
-      final confidenceImage = _convertToUint8List(depthData['confidenceImage']);
-      final cameraImage = _convertToUint8List(depthData['cameraImage']);
+      // Get app's documents directory
+
+      log('directory: $directoryPath', name: 'Data Saved');
+      final filePath = '$directoryPath/$jsonFilename';
       
-      // Save the images
-      final savedPaths = await _saveImagesToStorage(
-        depthImage: depthImage,
-        confidenceImage: confidenceImage,
-        cameraImage: cameraImage,
-      );
+      // Prepare data to save
+      Map<String, dynamic> dataToSave = {
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'depthWidth': depthData['depthWidth'],
+        'depthHeight': depthData['depthHeight'],
+        'intrinsicsWidth': depthData['intrinsicsWidth'],
+        'intrinsicsHeight': depthData['intrinsicsHeight'],
+        'focalLengthX': depthData['focalLengthX'],
+        'focalLengthY': depthData['focalLengthY'],
+        'principalPointX': depthData['principalPointX'],
+        'principalPointY': depthData['principalPointY'],
+        'modelMatrix': depthData['modelMatrix'],
+        'viewMatrix': depthData['viewMatrix'],
+        'projectionMatrix': depthData['projectionMatrix'],
+        'transformMatrix': depthData['transformMatrix'],
+        'depthData': List<double>.from(depthData['depthImage']),
+        'confidenceData': List<int>.from(depthData['confidenceImage']['planes'][0]['data']),
+        'originalImagePath': imagePath,
+      };
       
-      if (savedPaths.isNotEmpty) {
-        log('Saved images: ${savedPaths.join(", ")}', name: 'ImageSaver');
-        if (mounted) {
-          // Show a more prominent notification with action button
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('${savedPaths.length} images saved'),
-                duration: const Duration(seconds: 3),
-                action: SnackBarAction(
-                  label: 'VIEW',
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const GalleryView()),
-                    );
-                  },
-                ),
-              ),
-            );
-          });
-        }
-      }
+      // Convert to JSON and save to file
+      final jsonString = jsonEncode(dataToSave);
+      final file = File(filePath);
+      await file.writeAsString(jsonString);
+      
+      log('Successfully saved depth and confidence data to $filePath', name: 'Data Saved');
     } catch (e) {
-      log('Error saving images: ${e.toString()}', name: 'ImageSaver');
+      log('Error saving depth and confidence data: $e', name: 'Save Data Error');
     }
   }
   
-  // Helper method to convert dynamic data to Uint8List
-  Uint8List? _convertToUint8List(dynamic data) {
-    if (data == null) return null;
-    
-    if (data is Uint8List) return data;
-    
-    if (data is List) {
-      return Uint8List.fromList(data.map((e) => e as int).toList());
-    }
-    
-    if (data is Map) {
-      // Handle the format created by addRawImageDataToMap in Android
-      if (data.containsKey('planes') && data['planes'] is List) {
-        List planes = data['planes'] as List;
-        if (planes.isNotEmpty) {
-          // Fix the type cast issue here
-          Map<Object?, Object?> planeData = planes.first as Map<Object?, Object?>;
-          if (planeData.containsKey('data')) {
-            var rawBytes = planeData['data'];
-            if (rawBytes is List) {
-              log('Plane bytes: ${rawBytes.length}', name: 'ImageSaver');
-              // Safely cast the list elements to int
-              return Uint8List.fromList(rawBytes.map((e) => e as int).toList());
-            }
-          }
-        }
-      }
-      
-      // Original handling for other map formats
-      if (data.containsKey('bytes')) {
-        var bytes = data['bytes'];
-        if (bytes is List) {
-          log('bytes: ${bytes.length}', name: 'ImageSaver');
-          return Uint8List.fromList(bytes.map((e) => e as int).toList());
-        }
-      }
-      
-      // If 'data' directly contains the bytes (simpler format)
-      if (data.containsKey('data')) {
-        var directData = data['data'];
-        if (directData is List) {
-          log('direct data: ${directData.length}', name: 'ImageSaver');
-          return Uint8List.fromList(directData.map((e) => e as int).toList());
-        }
-      }
-    }
-    
-    return null;
-  }
   
-  // Helper method to save images to app's documents directory
-  Future<List<String>> _saveImagesToStorage({
-    Uint8List? depthImage,
-    Uint8List? confidenceImage,
-    Uint8List? cameraImage,
-  }) async {
-    final List<String> savedPaths = [];
-    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    
-    // Get the application documents directory
-    final appDir = await getApplicationDocumentsDirectory();
-    final arImagesDir = Directory('${appDir.path}/ar_images');
-     log('arImagesDir: ${arImagesDir.path}', name: 'ImageSaver');
-    // Create the directory if it doesn't exist
-    if (!await arImagesDir.exists()) {
-      await arImagesDir.create(recursive: true);
-    }
-    log('deppthImage: ${depthImage?.length}', name: 'ImageSaver');
-    // Save depth image if available
-    if (depthImage != null && depthImage.isNotEmpty) {
-      final filePath = '${arImagesDir.path}/depth_$timestamp.png';
-      print('Saving depth image to $filePath');
-      final file = File(filePath);
-      await file.writeAsBytes(depthImage);
-      savedPaths.add('Depth image');
-      log('Saved depth image to $filePath', name: 'ImageSaver');
-    }
-    
-    // Save confidence image if available
-    if (confidenceImage != null && confidenceImage.isNotEmpty) {
-      final filePath = '${arImagesDir.path}/confidence_$timestamp.png';
-      print('Saving confidence image to $filePath');
-      final file = File(filePath);
-      await file.writeAsBytes(confidenceImage);
-      savedPaths.add('Confidence image');
-      log('Saved confidence image to $filePath', name: 'ImageSaver');
-    }
-    
-    // Save camera image if available
-    if (cameraImage != null && cameraImage.isNotEmpty) {
-      final filePath = '${arImagesDir.path}/camera_$timestamp.jpg';
-      print('Saving camera image to $filePath');
-      final file = File(filePath);
-      await file.writeAsBytes(cameraImage);
-      savedPaths.add('Camera image');
-      log('Saved camera image to $filePath', name: 'ImageSaver');
-    }
-    
-    return savedPaths;
-  }
+  
+  
+
 
   @override
   Widget build(BuildContext context) {

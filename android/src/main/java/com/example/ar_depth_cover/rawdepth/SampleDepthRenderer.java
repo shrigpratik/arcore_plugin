@@ -350,15 +350,27 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         try (Image cameraImage = frame.acquireCameraImage();
              Image depthImage = frame.acquireRawDepthImage16Bits();
              Image confidenceImage = frame.acquireRawDepthConfidenceImage()) {
-            
+
             if (depthTimestamp != depthImage.getTimestamp()) {
                 depthTimestamp = depthImage.getTimestamp();
                 depthReceived = true;
+                
+                // Get the camera pose matrix - this is the transformation matrix
                 float[] modelMatrix = new float[16];
+                frame.getCamera().getPose().toMatrix(modelMatrix, 0);
+                
+                // Get view matrix - another useful transformation matrix
+                float[] viewMatrix = new float[16];
+                frame.getCamera().getViewMatrix(viewMatrix, 0);
+                
+                // Get projection matrix - useful for projecting 3D points to 2D screen coordinates
+                float[] projectionMatrix = new float[16];
+                frame.getCamera().getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
+                
                 CameraIntrinsics intrinsics = frame.getCamera().getTextureIntrinsics();
                 Image.Plane depthImagePlane = depthImage.getPlanes()[0];
                 final Camera camera = frame.getCamera();
-                Anchor anchor=session.createAnchor(camera.getPose());
+                Anchor anchor = session.createAnchor(camera.getPose());
                 anchor.getPose().toMatrix(modelMatrix, 0);
                 String imagePath = saveImage(cameraImage);
                 // Set the endianess to ensure we extract depth data in the correct byte order.
@@ -367,12 +379,9 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
                 Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
                 ByteBuffer confidenceBuffer = confidenceImagePlane.getBuffer().order(ByteOrder.nativeOrder());
-                // Get the model matrix for the camera
-//                frame.getCamera().getModelMatrix(modelMatrix, 0);
                 
                 // To transform 2D depth pixels into 3D points we retrieve the intrinsic camera parameters
                 // corresponding to the depth miage. See more information about the depth values at
-                // https://developers.google.com/ar/develop/java/depth/overview#understand-depth-values.
                 int[] intrinsicsDimensions = intrinsics.getImageDimensions();
                 int depthWidth = depthImage.getWidth();
                 int depthHeight = depthImage.getHeight();
@@ -386,9 +395,8 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 // Convert raw depth images to depth in meters
                 FloatBuffer depthInMeters = convertRawDepthImageToMeters(depthImage, confidenceImage);
                 
-                // For a large depth map, consider downsampling
                 List<Float> sampledDepth = new ArrayList<>();
-                int stride = 1; // Adjust based on your needs
+                int stride = 1;
                 
                 for (int i = 0; i < depthInMeters.capacity(); i += stride) {
                     sampledDepth.add(depthInMeters.get(i));
@@ -406,10 +414,11 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                         depthWidth,
                         depthHeight,
                         fx,
-                        fy, cx, cy,
-
+                        fy, 
+                        cx, 
+                        cy,
                         confidenceImage,
-                            imagePath,
+                        imagePath,
                         depthTimestamp
                     );
                 }
@@ -463,69 +472,41 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             combinedData.put("imagePath", cameraImagePath);
             addRawImageDataToMap(combinedData, "confidenceImage", confidenceImage);
 
-            // Sample the 2D depth data
-            final int SAMPLE_STRIDE_2D = 10; // Increase stride to reduce data size
-            
-            // Flutter method channel doesn't support 2D arrays, so we'll convert to Lists
-//            List<List<Integer>> depthPointsList = new ArrayList<>();
-//
-//            // Sample and add depth values as Lists of [x, y, depth]
-//            for (int y = 0; y < depthHeight; y += SAMPLE_STRIDE_2D) {
-//                for (int x = 0; x < depthWidth; x += SAMPLE_STRIDE_2D) {
-//                    int index = y * depthWidth + x; // Original buffer index
-//
-//                    if (index < depthBuffer.capacity()) {
-//                        List<Integer> point = new ArrayList<>();
-//                        point.add(x);
-//                        point.add(y);
-//                        point.add((int)depthBuffer.get(index));
-//                        depthPointsList.add(point);
-//                    }
-//                }
-//            }
-//
-//            // Add the 2D depth points to the map
-//            combinedData.put("depthPoints", depthPointsList);
-//
-//            // Add 3D points data
-//            int numPoints = pointsBuffer.capacity() / FLOATS_PER_POINT;
-//            combinedData.put("numPoints3d", numPoints);
-//
-//            // Sample the 3D points data to avoid overloading Flutter
-//            final int MAX_POINTS_TO_SEND = 2000;
-//            int stride = Math.max(1, numPoints / MAX_POINTS_TO_SEND);
-//
-//            // Flutter method channel doesn't support 3D arrays, so convert to Lists
-//            List<List<Float>> points3dList = new ArrayList<>();
-//
-//            // Rewind buffer to read from beginning
-//            pointsBuffer.rewind();
-//
-//            // Sample and add 3D points as Lists of [x, y, z, confidence]
-//            for (int i = 0; i < numPoints; i += stride) {
-//                if ((i * FLOATS_PER_POINT + 3) < pointsBuffer.capacity()) {
-//                    List<Float> point = new ArrayList<>();
-//
-//                    // Skip to the correct position
-//                    pointsBuffer.position(i * FLOATS_PER_POINT);
-//
-//                    // Add X, Y, Z coordinates and confidence
-//                    point.add(pointsBuffer.get()); // X
-//                    point.add(pointsBuffer.get()); // Y
-//                    point.add(pointsBuffer.get()); // Z
-//                    point.add(pointsBuffer.get()); // Confidence
-//
-//                    points3dList.add(point);
-//                }
-//            }
-//
-//            // Add the 3D points to the map
-//            combinedData.put("points3d", points3dList);
-//
-            // Add raw image data
-//            addRawImageDataToMap(combinedData, "depthImage", depthImage);
-
-
+            // Add the transformation matrices if available
+            Frame frame = currentFrame;
+            if (frame != null) {
+                float[] modelMatrix = new float[16];
+                float[] viewMatrix = new float[16];
+                float[] projectionMatrix = new float[16];
+                
+                frame.getCamera().getPose().toMatrix(modelMatrix, 0);
+                frame.getCamera().getViewMatrix(viewMatrix, 0);
+                frame.getCamera().getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
+                
+                // Calculate MVP matrix (P × V × M)
+                float[] mvMatrix = new float[16];
+                float[] mvpMatrix = new float[16];
+                android.opengl.Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0);
+                android.opengl.Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, mvMatrix, 0);
+                
+                // Convert float arrays to lists for sending via method channel
+                List<Float> modelMatrixList = new ArrayList<>();
+                List<Float> viewMatrixList = new ArrayList<>();
+                List<Float> projectionMatrixList = new ArrayList<>();
+                List<Float> mvpMatrixList = new ArrayList<>();
+                
+                for (int i = 0; i < 16; i++) {
+                    modelMatrixList.add(modelMatrix[i]);
+                    viewMatrixList.add(viewMatrix[i]);
+                    projectionMatrixList.add(projectionMatrix[i]);
+                    mvpMatrixList.add(mvpMatrix[i]);
+                }
+                
+                combinedData.put("modelMatrix", modelMatrixList);
+                combinedData.put("viewMatrix", viewMatrixList);
+                combinedData.put("projectionMatrix", projectionMatrixList);
+                combinedData.put("transformMatrix", mvpMatrixList);
+            }
             
             // Send the combined data to Flutter
             Activity activity = getActivity(context);
@@ -533,7 +514,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 activity.runOnUiThread(() -> {
                     try {
                         methodChannel.invokeMethod("onDepthDataReceived", combinedData);
-
                     } catch (Exception e) {
                         Log.e(TAG, "Error sending complete depth data to Flutter", e);
                     }
@@ -600,7 +580,8 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
      * @param confidence The confidence image
      * @return A FloatBuffer containing depth values in meters for each pixel
      */
-    private static FloatBuffer convertRawDepthImageToMeters(Image depth, Image confidence) {
+    private static FloatBuffer
+    convertRawDepthImageToMeters(Image depth, Image confidence) {
         // Java uses big endian so change the endianness to ensure
         // that the depth data is in the correct byte order.
         final Image.Plane depthImagePlane = depth.getPlanes()[0];
@@ -629,18 +610,14 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         
         // Create output buffer for depth in meters
         FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
-        
+        Log.d("DEPTH_DATA_1", String.valueOf(depth.getPlanes().length));
+        Log.d("DEPTH_DATA_2", String.valueOf(depth.getPlanes()[0].getBuffer().capacity()));
+//        Log.d("DEPTH_DATA_3", String.valueOf(depth.getPlanes()[0]));
         // Convert each depth value from millimeters to meters
         for (int y = 0; y < depthHeight; y++) {
             for (int x = 0; x < depthWidth; x++) {
                 int idx = y * depthWidth + x;
                 int depthMillimeters = depthBuffer.get(idx);
-                
-                // Get confidence value
-                byte confidencePixelValue = confidenceBuffer.get(
-                    y * confidenceImagePlane.getRowStride() + x * confidenceImagePlane.getPixelStride());
-                float confidenceNormalized = ((float) (confidencePixelValue & 0xff)) / 255.0f;
-                
                depthMeters.put(idx, depthMillimeters / 1000.0f);}
             }
 
@@ -740,9 +717,9 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
      * @return path to the image on disk
      */
     private String saveImage(Image imageToSave) throws IOException {
-        // Use app-specific storage which doesn't require special permissions
+        // Use Downloads directory which is more accessible to users
         File mediaStorageDir = new File(
-                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 "ar_images");
 
         if (!mediaStorageDir.exists()) {
@@ -758,7 +735,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         }
 
         // Create unique filename with timestamp
-        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        String timeStamp = String.valueOf(System.currentTimeMillis());
         File imageFile = new File(mediaStorageDir, "IMG_" + timeStamp + ".jpg");
         String imageOutputPath = imageFile.getAbsolutePath();
         
@@ -829,6 +806,16 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         try (java.io.FileOutputStream out = new java.io.FileOutputStream(imageFile)) {
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out);
             Log.d(TAG, "Image saved successfully at: " + imageOutputPath);
+            
+            // Make the image visible in gallery/downloads
+            Activity activity = getActivity(context);
+            if (activity != null) {
+                Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                Uri contentUri = Uri.fromFile(imageFile);
+                mediaScanIntent.setData(contentUri);
+                activity.sendBroadcast(mediaScanIntent);
+                Log.d(TAG, "Added image to media scanner: " + imageOutputPath);
+            }
         } catch (Exception e) {
             Log.e(TAG, "Error saving image", e);
             return null;
@@ -843,7 +830,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
     /**
      * Starts recording a video for 5 seconds
      */
-    private void startRecording() {
+    public void startRecording() {
         try {
             Activity activity = getActivity(context);
             if (activity == null) {
