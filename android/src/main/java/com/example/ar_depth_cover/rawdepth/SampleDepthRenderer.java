@@ -115,12 +115,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
     // A reference to the current frame for depth processing
     private Frame currentFrame;
     
-    // Video recording components
-    private MediaRecorder mediaRecorder;
-    private boolean isRecording = false;
-    private String videoOutputPath;
-    private static final int RECORDING_DURATION_MS = 5000; // 5 seconds
-    
+
     // Handler for main thread operations
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -323,14 +318,10 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                     if (camera.getTrackingState() == TrackingState.TRACKING) {
                         Log.d(TAG, "Processing depth data manually");
                         
-                        // Start video recording if not already recording
-                        if (!isRecording) {
-//                            startRecording();
+                  
                         processDepthData(currentFrame);
     
-                        } else {
-                            Log.w(TAG, "Already recording, ignoring record request");
-                        }
+
                     } else {
                         Log.w(TAG, "Cannot process depth data: camera not tracking");
                     }
@@ -704,12 +695,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         }
     }
 
-    /**
-     * Set a listener for recording state changes
-     */
-    public void setRecordingStateListener(RecordingStateListener listener) {
-        this.recordingStateListener = listener;
-    }
 
     /**
      * Saves Image to disk and returns a path for the image on disk
@@ -827,175 +812,13 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         return imageOutputPath;
     }
 
-    /**
-     * Starts recording a video for 5 seconds
-     */
-    public void startRecording() {
-        try {
-            Activity activity = getActivity(context);
-            if (activity == null) {
-                Log.e(TAG, "Cannot start recording: no activity available");
-                return;
-            }
-            
-            // Setup video output path
-            File mediaStorageDir = new File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    "ARDepthCover");
-            
-            if (!mediaStorageDir.exists()) {
-                if (!mediaStorageDir.mkdirs()) {
-                    Log.e(TAG, "Failed to create directory for video storage");
-                    return;
-                }
-            }
-            
-            // Create unique filename with timestamp
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-            videoOutputPath = mediaStorageDir.getPath() + File.separator + "VID_" + timeStamp + ".mp4";
-            
-            // Initialize media recorder on the UI thread
-            activity.runOnUiThread(() -> {
-                try {
-                    if (session == null) {
-                        Log.e(TAG, "Cannot start recording: AR session is null");
-                        return;
-                    }
-                    
-                    // Get display metrics to set appropriate video size
-                    android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
-                    activity.getWindowManager().getDefaultDisplay().getMetrics(metrics);
-                    int width = metrics.widthPixels;
-                    int height = metrics.heightPixels;
-                    
-                    // Initialize MediaRecorder
-                    mediaRecorder = new MediaRecorder();
-                    
-                    // Setup for ARCore camera recording
-                    mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-                    mediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
-                    mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                    mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                    mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-                    mediaRecorder.setVideoEncodingBitRate(10000000);
-                    mediaRecorder.setVideoFrameRate(30);
-                    mediaRecorder.setVideoSize(width, height);
-                    mediaRecorder.setOutputFile(videoOutputPath);
-                    
-                    try {
-                        mediaRecorder.prepare();
-                    } catch (IOException e) {
-                        Log.e(TAG, "Error preparing MediaRecorder", e);
-                        return;
-                    }
-                    
-                    // Start recording
-                    mediaRecorder.start();
-                    isRecording = true;
-                    
-                    // Notify listener that recording has started
-                    if (recordingStateListener != null) {
-                        recordingStateListener.onRecordingStateChanged(true);
-                    }
-                    
-                    Log.d(TAG, "Started recording video to: " + videoOutputPath);
-                    
-                    // Display toast on UI thread
-                    Toast.makeText(context, "Recording video for 5 seconds...", Toast.LENGTH_SHORT).show();
-                    
-                    // Schedule stop recording after 5 seconds
-                    mainHandler.postDelayed(this::stopRecording, RECORDING_DURATION_MS);
-                    
-                    // Send a notification to Flutter about recording started
-                    notifyRecordingStateChange("started", videoOutputPath);
-                } catch (Exception e) {
-                    Log.e(TAG, "Error starting recording", e);
-                    Toast.makeText(context, "Failed to start recording: " + e.getMessage(), 
-                                 Toast.LENGTH_SHORT).show();
-                }
-            });
-        } catch (Exception e) {
-            Log.e(TAG, "Error setting up video recording", e);
-        }
-    }
-    
-    /**
-     * Stops the current video recording
-     */
-    private void stopRecording() {
-        if (isRecording && mediaRecorder != null) {
-            try {
-                mediaRecorder.stop();
-                mediaRecorder.reset();
-                mediaRecorder.release();
-                mediaRecorder = null;
-                isRecording = false;
-                
-                // Notify listener that recording has stopped
-                if (recordingStateListener != null) {
-                    recordingStateListener.onRecordingStateChanged(false);
-                }
-                
-                Log.d(TAG, "Stopped recording video: " + videoOutputPath);
-                
-                // Notify Flutter about recording completed
-                notifyRecordingStateChange("completed", videoOutputPath);
-                
-                // Make the video available in the gallery
-                addVideoToGallery(videoOutputPath);
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping recording", e);
-            }
-        }
-    }
-    
-    /**
-     * Adds the recorded video to the gallery
-     */
-    private void addVideoToGallery(String videoPath) {
-        Activity activity = getActivity(context);
-        if (activity == null) return;
-        
-        activity.runOnUiThread(() -> {
-            try {
-                // Trigger media scanner to add video to gallery
-                Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-                File file = new File(videoPath);
-                Uri contentUri = Uri.fromFile(file);
-                mediaScanIntent.setData(contentUri);
-                activity.sendBroadcast(mediaScanIntent);
-                Log.d(TAG, "Added video to gallery: " + videoPath);
-            } catch (Exception e) {
-                Log.e(TAG, "Error adding video to gallery", e);
-            }
-        });
-    }
-    
-    /**
-     * Notify Flutter about recording state changes
-     */
-    private void notifyRecordingStateChange(String state, String path) {
-        if (methodChannel == null) return;
-        
-        Activity activity = getActivity(context);
-        if (activity == null) return;
-        
-        Map<String, Object> recordingData = new HashMap<>();
-        recordingData.put("state", state);
-        recordingData.put("path", path);
-        
-        activity.runOnUiThread(() -> {
-            methodChannel.invokeMethod("onRecordingStateChanged", recordingData);
-        });
-    }
+
 
     /**
      * Clean up resources used by the renderer
      */
     public void close() {
-        if (isRecording) {
-            stopRecording();
-        }
+
         
         if (session != null) {
             session.close();
@@ -1008,14 +831,5 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         }
     }
     
-    /**
-     * Get depth value in millimeters at the specified pixel coordinates
-     */
-    private int getDepthMillimeters(ShortBuffer depthBuffer, int x, int y, int width) {
-        int idx = y * width + x;
-        if (idx >= 0 && idx < depthBuffer.capacity()) {
-            return depthBuffer.get(idx);
-        }
-        return 0;
-    }
+
 } 
