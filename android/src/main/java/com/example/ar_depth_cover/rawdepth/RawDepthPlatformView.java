@@ -159,7 +159,7 @@ public class RawDepthPlatformView extends FrameLayout implements PlatformView {
      * Starts a sequence that captures depth data every 500ms for 5 seconds
      */
     private void startCaptureSequence() {
-        final int CAPTURE_INTERVAL_MS = 250;  // 500ms between captures
+        final int CAPTURE_INTERVAL_MS = 100;  // 500ms between captures
         final int TOTAL_DURATION_MS = 5000;   // 5 seconds total duration
         final int TOTAL_CAPTURES = TOTAL_DURATION_MS / CAPTURE_INTERVAL_MS;
         
@@ -173,7 +173,7 @@ public class RawDepthPlatformView extends FrameLayout implements PlatformView {
                     if (renderer != null) {
                         // Must run on UI thread since it might involve GL operations
                         surfaceView.post(() -> {
-                            renderer.startRecording();
+                            renderer.processDepthDataManually();
                         });
                         
                         Log.d(TAG, "Captured frame " + (captureCount + 1) + " of " + TOTAL_CAPTURES);

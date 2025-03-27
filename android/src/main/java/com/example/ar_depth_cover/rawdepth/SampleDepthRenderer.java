@@ -60,6 +60,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Renderer for depth data using Google's SampleRender framework.
@@ -118,6 +122,8 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
     // Handler for main thread operations
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+    private volatile String lastSavedImagePath = null;
 
     // Recording state listener
     private RecordingStateListener recordingStateListener;
@@ -293,7 +299,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 Camera camera = frame.getCamera();
                 if (camera.getTrackingState() == TrackingState.TRACKING) {
                     // Uncomment if you want to process depth data every frame
-                    // processDepthData(frame);
+//                     processDepthData(frame);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Exception on the OpenGL thread", e);
@@ -339,7 +345,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
      */
     private void processDepthData(Frame frame) {
         try (Image cameraImage = frame.acquireCameraImage();
-             Image depthImage = frame.acquireRawDepthImage16Bits();
+             Image depthImage = frame.acquireDepthImage16Bits();
              Image confidenceImage = frame.acquireRawDepthConfidenceImage()) {
 
             if (depthTimestamp != depthImage.getTimestamp()) {
@@ -363,7 +369,13 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 final Camera camera = frame.getCamera();
                 Anchor anchor = session.createAnchor(camera.getPose());
                 anchor.getPose().toMatrix(modelMatrix, 0);
-                String imagePath = saveImage(cameraImage);
+                
+                // Save image asynchronously without waiting
+                saveImageAsync(cameraImage);
+                
+                // Use the last saved image path (might be null if saving is still in progress)
+                String imagePath = lastSavedImagePath;
+                
                 // Set the endianess to ensure we extract depth data in the correct byte order.
                 ShortBuffer depthBuffer =
                         depthImagePlane.getBuffer().order(ByteOrder.nativeOrder()).asShortBuffer();
@@ -640,19 +652,19 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
                 // Create and configure session
                 session = new Session(context);
-                if (!session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)) {
+                if (!session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                     Log.e(TAG, "This device does not support 3D measuring with raw depth");
                     // Don't set session to null, let's try to continue with a regular ARCore session
                 }
                 
                 Config config = session.getConfig();
-                config.setDepthMode(Config.DepthMode.RAW_DEPTH_ONLY);
+                config.setDepthMode(Config.DepthMode.AUTOMATIC);
                 
                 // Try updating to different focus modes if applicable
                 config.setFocusMode(Config.FocusMode.AUTO);
                 
                 // Configure light estimation if needed
-                config.setLightEstimationMode(Config.LightEstimationMode.ENVIRONMENTAL_HDR);
+                config.setLightEstimationMode(Config.LightEstimationMode.AMBIENT_INTENSITY);
                 
                 session.configure(config);
                 
@@ -695,13 +707,50 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         }
     }
 
+    /**
+     * Saves Image to disk asynchronously and returns immediately
+     * The result will be available in lastSavedImagePath
+     */
+    private void saveImageAsync(Image imageToSave) {
+        // Create a copy of the image data since the original image might be invalidated
+        final Image.Plane[] planes = imageToSave.getPlanes();
+        final ByteBuffer[] buffers = new ByteBuffer[3];
+        final int[] strides = new int[3];
+        final int[] pixelStrides = new int[3];
+        
+        for (int i = 0; i < 3; i++) {
+            ByteBuffer originalBuffer = planes[i].getBuffer();
+            buffers[i] = ByteBuffer.allocate(originalBuffer.capacity());
+            buffers[i].order(originalBuffer.order());
+            buffers[i].put(originalBuffer);
+            buffers[i].rewind();
+            strides[i] = planes[i].getRowStride();
+            pixelStrides[i] = planes[i].getPixelStride();
+        }
+        
+        final int width = imageToSave.getWidth();
+        final int height = imageToSave.getHeight();
+        
+        executorService.execute(() -> {
+            try {
+                String result = saveImageInBackground(
+                    buffers, strides, pixelStrides, width, height);
+                lastSavedImagePath = result;
+                Log.d(TAG, "Image saved asynchronously at: " + result);
+            } catch (Exception e) {
+                Log.e(TAG, "Error saving image asynchronously", e);
+                lastSavedImagePath = null;
+            }
+        });
+    }
 
     /**
-     * Saves Image to disk and returns a path for the image on disk
-     *
-     * @return path to the image on disk
+     * Saves Image to disk in a background thread
+     * This method contains the actual image saving logic
      */
-    private String saveImage(Image imageToSave) throws IOException {
+    private String saveImageInBackground(
+            ByteBuffer[] buffers, int[] strides, int[] pixelStrides,
+            int width, int height) throws IOException {
         // Use Downloads directory which is more accessible to users
         File mediaStorageDir = new File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
@@ -724,41 +773,25 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         File imageFile = new File(mediaStorageDir, "IMG_" + timeStamp + ".jpg");
         String imageOutputPath = imageFile.getAbsolutePath();
         
-        // Get the YUV image data
-        Image.Plane[] planes = imageToSave.getPlanes();
-        ByteBuffer yBuffer = planes[0].getBuffer();
-        ByteBuffer uBuffer = planes[1].getBuffer();
-        ByteBuffer vBuffer = planes[2].getBuffer();
-        
-        // Get image dimensions
-        int width = imageToSave.getWidth();
-        int height = imageToSave.getHeight();
-        
-        // Get strides and pixel strides for calculating appropriate positions
-        int yRowStride = planes[0].getRowStride();
-        int uvRowStride = planes[1].getRowStride();
-        int uvPixelStride = planes[1].getPixelStride();
-        
         // Create data arrays for processing
-        byte[] yData = new byte[yBuffer.capacity()];
-        byte[] uData = new byte[uBuffer.capacity()];
-        byte[] vData = new byte[vBuffer.capacity()];
+        byte[] yData = new byte[buffers[0].capacity()];
+        byte[] uData = new byte[buffers[1].capacity()];
+        byte[] vData = new byte[buffers[2].capacity()];
         
         // Copy data from buffers
-        yBuffer.get(yData);
-        uBuffer.get(uData);
-        vBuffer.get(vData);
+        buffers[0].get(yData);
+        buffers[1].get(uData);
+        buffers[2].get(vData);
         
         // Create bitmap for RGB output
-        // Note: We'll create a bitmap with width and height switched for rotation
         android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(height, width, android.graphics.Bitmap.Config.ARGB_8888);
         
         // Convert YUV to RGB and rotate 90 degrees counterclockwise
         for (int x = 0; x < width; x++) {
             for (int y = 0; y < height; y++) {
                 // Calculate indices for YUV data
-                int yIndex = y * yRowStride + x;
-                int uvIndex = (y / 2) * uvRowStride + (x / 2) * uvPixelStride;
+                int yIndex = y * strides[0] + x;
+                int uvIndex = (y / 2) * strides[1] + (x / 2) * pixelStrides[1];
                 
                 // Get YUV values
                 int yValue = yData[yIndex] & 0xFF;
@@ -782,7 +815,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 int color = android.graphics.Color.argb(255, r, g, b);
                 
                 // Set pixel in rotated position (90 degrees counterclockwise)
-                // For 90° counterclockwise rotation: new_x = (height-1-y), new_y = x
                 bitmap.setPixel(height - 1 - y, x, color);
             }
         }
@@ -790,36 +822,17 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         // Save the bitmap as JPEG
         try (java.io.FileOutputStream out = new java.io.FileOutputStream(imageFile)) {
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out);
-            Log.d(TAG, "Image saved successfully at: " + imageOutputPath);
-            
-            // Make the image visible in gallery/downloads
-            Activity activity = getActivity(context);
-            if (activity != null) {
-                Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-                Uri contentUri = Uri.fromFile(imageFile);
-                mediaScanIntent.setData(contentUri);
-                activity.sendBroadcast(mediaScanIntent);
-                Log.d(TAG, "Added image to media scanner: " + imageOutputPath);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error saving image", e);
-            return null;
         } finally {
-            // Recycle bitmap to free memory
             bitmap.recycle();
         }
         
         return imageOutputPath;
     }
 
-
-
     /**
      * Clean up resources used by the renderer
      */
     public void close() {
-
-        
         if (session != null) {
             session.close();
             session = null;
@@ -828,6 +841,17 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         if (cameraShader != null) {
             cameraShader.release();
             cameraShader = null;
+        }
+
+        // Shutdown the executor service
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
     
