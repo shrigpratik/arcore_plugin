@@ -14,7 +14,7 @@ class DepthHeatmapVisualizer extends StatefulWidget {
     required this.width,
     required this.height,
     this.minDepthThreshold = 0.0,
-    this.maxDepthThreshold = 3.0, // Default max depth of 3 meters
+    this.maxDepthThreshold = 2.0, // Default depth threshold in meters
   });
 
   @override
@@ -88,13 +88,13 @@ class _DepthHeatmapVisualizerState extends State<DepthHeatmapVisualizer> {
   Color _getColorForDepth(double normalizedDepth) {
     // More nuanced color gradient for meter-based depth
     final gradient = [
-      Colors.lightGreen, // Shallow depths (0-10m)
+      Colors.lightGreen, // Shallow depths
       Colors.green,
-      Colors.teal, // Mid depths (10-25m)
+      Colors.teal, // Mid depths
       Colors.blue,
-      Colors.blue[900], // Deeper depths (25-40m)
+      Colors.blue[900], // Deeper depths
       Colors.indigo,
-      Colors.purple, // Very deep (40-50m)
+      Colors.purple, // Very deep
       Colors.deepPurple,
     ];
 
@@ -114,7 +114,7 @@ class _DepthHeatmapVisualizerState extends State<DepthHeatmapVisualizer> {
     return _heatmapImage != null
         ? Material(
           child: RotatedBox(
-            quarterTurns: 3,
+            quarterTurns: 1,
             child: RawImage(image: _heatmapImage, fit: BoxFit.contain),
           ),
         )
