@@ -64,6 +64,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import com.example.ar_depth_cover.common.helpers.MultiFrameDepthProcessor;
 
 /**
  * Renderer for depth data using Google's SampleRender framework.
@@ -71,6 +72,8 @@ import java.util.concurrent.TimeUnit;
 public class SampleDepthRenderer implements SampleRender.Renderer {
     private static final String TAG = SampleDepthRenderer.class.getSimpleName();
     private static final String CHANNEL_NAME = "ar_depth_cover/depth_data";
+    private MultiFrameDepthProcessor depthProcessor = new MultiFrameDepthProcessor();
+
 
     /**
      * Interface for listening to recording state changes
@@ -299,7 +302,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 Camera camera = frame.getCamera();
                 if (camera.getTrackingState() == TrackingState.TRACKING) {
                     // Uncomment if you want to process depth data every frame
-//                     processDepthData(frame);
+                    // processDepthData(frame);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Exception on the OpenGL thread", e);
@@ -351,7 +354,22 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             if (depthTimestamp != depthImage.getTimestamp()) {
                 depthTimestamp = depthImage.getTimestamp();
                 depthReceived = true;
-                
+
+                ShortBuffer depthBuffer = depthImage.getPlanes()[0].getBuffer().asShortBuffer();
+                ByteBuffer confidenceBuffer = confidenceImage.getPlanes()[0].getBuffer();
+
+
+                int depthWidth = depthImage.getWidth();
+                int depthHeight = depthImage.getHeight();
+                // Process and average depth across frames
+                FloatBuffer processedDepthBuffer = depthProcessor.processMultiFrameDepth(
+                    depthBuffer, 
+                    confidenceBuffer, 
+                    System.currentTimeMillis(),
+                        depthWidth,
+                        depthHeight
+                );
+            
                 // Get the camera pose matrix - this is the transformation matrix
                 float[] modelMatrix = new float[16];
                 frame.getCamera().getPose().toMatrix(modelMatrix, 0);
@@ -376,18 +394,13 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 // Use the last saved image path (might be null if saving is still in progress)
                 String imagePath = lastSavedImagePath;
                 
-                // Set the endianess to ensure we extract depth data in the correct byte order.
-                ShortBuffer depthBuffer =
-                        depthImagePlane.getBuffer().order(ByteOrder.nativeOrder()).asShortBuffer();
 
                 Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
-                ByteBuffer confidenceBuffer = confidenceImagePlane.getBuffer().order(ByteOrder.nativeOrder());
-                
+
                 // To transform 2D depth pixels into 3D points we retrieve the intrinsic camera parameters
                 // corresponding to the depth miage. See more information about the depth values at
                 int[] intrinsicsDimensions = intrinsics.getImageDimensions();
-                int depthWidth = depthImage.getWidth();
-                int depthHeight = depthImage.getHeight();
+
                 float fx = intrinsics.getFocalLength()[0] * depthWidth / intrinsicsDimensions[0];
                 float fy = intrinsics.getFocalLength()[1] * depthHeight / intrinsicsDimensions[1];
                 float cx =
