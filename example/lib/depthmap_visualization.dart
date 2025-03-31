@@ -1,10 +1,15 @@
+import 'dart:convert';
+import 'dart:developer';
+import 'dart:io';
 import 'dart:ui' as ui;
+import 'package:ar_depth_cover_example/depth_data_saver.dart';
 import 'package:flutter/material.dart';
 
 class DepthHeatmapVisualizer extends StatefulWidget {
   final List<double> depthData;
   final int width;
   final int height;
+  final String imagePath;
   final double minDepthThreshold;
   final double maxDepthThreshold;
 
@@ -13,6 +18,7 @@ class DepthHeatmapVisualizer extends StatefulWidget {
     required this.depthData,
     required this.width,
     required this.height,
+    required this.imagePath,
     this.minDepthThreshold = 0.0,
     this.maxDepthThreshold = 2.0, // Default depth threshold in meters
   });
@@ -28,6 +34,48 @@ class _DepthHeatmapVisualizerState extends State<DepthHeatmapVisualizer> {
   void initState() {
     super.initState();
     _generateHeatmap();
+    saveDepthData();
+  }
+
+  Future<void> saveDepthData() async {
+    try {
+      // Validate image path
+      if (widget.imagePath.isEmpty) {
+        log('Cannot save data: Image path is empty', name: 'Save Data Error');
+        return;
+      }
+
+      log(widget.imagePath, name: "Data Saved");
+
+      // Create a filename based on the image path
+      String baseFilename = widget.imagePath.split('/').last.split('.').first;
+
+      // Get the directory path by removing the last component (filename)
+      String directoryPath = widget.imagePath
+          .split('/')
+          .sublist(0, widget.imagePath.split('/').length - 1)
+          .join('/');
+
+      String jsonFilename = '${baseFilename}_depth_data1.json';
+      final filePath = '$directoryPath/$jsonFilename';
+
+      // Prepare simplified data to save - only width, height and depth data
+      Map<String, dynamic> dataToSave = {
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'width': widget.width,
+        'height': widget.height,
+        'depthData': widget.depthData,
+      };
+
+      // Convert to JSON and save to file
+      final jsonString = jsonEncode(dataToSave);
+      final file = File(filePath);
+      await file.writeAsString(jsonString);
+
+      log('Successfully saved depth data to $filePath', name: 'Data Saved');
+    } catch (e) {
+      log('Error saving depth data: $e', name: 'Save Data Error');
+    }
   }
 
   void _generateHeatmap() async {
