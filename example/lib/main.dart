@@ -118,7 +118,7 @@ class _ARHomePageState extends State<ARHomePage> {
       );
 
       // Save depth and confidence data to a JSON file
-      // _saveDepthAndConfidenceData(depthData);
+      _saveDepthAndConfidenceData(depthData);
     });
   }
 
@@ -208,6 +208,7 @@ class _ARHomePageState extends State<ARHomePage> {
                         height: _depthData!['depthHeight'],
                         width: _depthData!['depthWidth'],
                         imagePath: _depthData!['imagePath'],
+                        dataToSave: _depthData!,
                       ),
                 ),
               );

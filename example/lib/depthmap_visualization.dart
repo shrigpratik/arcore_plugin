@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:ui' as ui;
-import 'package:ar_depth_cover_example/depth_data_saver.dart';
 import 'package:flutter/material.dart';
 
 class DepthHeatmapVisualizer extends StatefulWidget {
@@ -12,6 +11,7 @@ class DepthHeatmapVisualizer extends StatefulWidget {
   final String imagePath;
   final double minDepthThreshold;
   final double maxDepthThreshold;
+  final Map<String, dynamic> dataToSave;
 
   const DepthHeatmapVisualizer({
     super.key,
@@ -19,8 +19,9 @@ class DepthHeatmapVisualizer extends StatefulWidget {
     required this.width,
     required this.height,
     required this.imagePath,
-    this.minDepthThreshold = 0.0,
-    this.maxDepthThreshold = 2.0, // Default depth threshold in meters
+    this.minDepthThreshold = 0.5,
+    this.maxDepthThreshold = 3.0,
+    required this.dataToSave, // Default depth threshold in meters
   });
 
   @override
@@ -56,19 +57,13 @@ class _DepthHeatmapVisualizerState extends State<DepthHeatmapVisualizer> {
           .sublist(0, widget.imagePath.split('/').length - 1)
           .join('/');
 
-      String jsonFilename = '${baseFilename}_depth_data1.json';
+      String jsonFilename = '${baseFilename}_depth_data.json';
       final filePath = '$directoryPath/$jsonFilename';
 
       // Prepare simplified data to save - only width, height and depth data
-      Map<String, dynamic> dataToSave = {
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'width': widget.width,
-        'height': widget.height,
-        'depthData': widget.depthData,
-      };
 
       // Convert to JSON and save to file
-      final jsonString = jsonEncode(dataToSave);
+      final jsonString = jsonEncode(widget.dataToSave);
       final file = File(filePath);
       await file.writeAsString(jsonString);
 
@@ -136,14 +131,15 @@ class _DepthHeatmapVisualizerState extends State<DepthHeatmapVisualizer> {
   Color _getColorForDepth(double normalizedDepth) {
     // More nuanced color gradient for meter-based depth
     final gradient = [
-      Colors.lightGreen, // Shallow depths
+      Colors.red, // Nearest depth
+      Colors.orange,
+      Colors.yellow,
       Colors.green,
-      Colors.teal, // Mid depths
-      Colors.blue,
-      Colors.blue[900], // Deeper depths
+      Colors.cyan,
+      Colors.blue, // Mid depths
       Colors.indigo,
-      Colors.purple, // Very deep
-      Colors.deepPurple,
+      Colors.purple,
+      Colors.deepPurple, // Farthest depth
     ];
 
     // Determine which pair of colors to interpolate between

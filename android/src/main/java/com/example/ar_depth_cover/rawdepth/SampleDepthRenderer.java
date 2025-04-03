@@ -131,6 +131,8 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
     // Recording state listener
     private RecordingStateListener recordingStateListener;
 
+    private static final float CONFIDENCE_THRESHOLD = 0.8f;
+
     /**
      * Constructs a SampleDepthRenderer with the given context.
      */
@@ -348,27 +350,16 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
      */
     private void processDepthData(Frame frame) {
         try (Image cameraImage = frame.acquireCameraImage();
-             Image depthImage = frame.acquireDepthImage16Bits();
+             Image depthImage = frame.acquireRawDepthImage16Bits();
              Image confidenceImage = frame.acquireRawDepthConfidenceImage()) {
 
             if (depthTimestamp != depthImage.getTimestamp()) {
                 depthTimestamp = depthImage.getTimestamp();
                 depthReceived = true;
-
-                ShortBuffer depthBuffer = depthImage.getPlanes()[0].getBuffer().asShortBuffer();
-                ByteBuffer confidenceBuffer = confidenceImage.getPlanes()[0].getBuffer();
-
+ 
 
                 int depthWidth = depthImage.getWidth();
                 int depthHeight = depthImage.getHeight();
-                // Process and average depth across frames
-                FloatBuffer processedDepthBuffer = depthProcessor.processMultiFrameDepth(
-                    depthBuffer, 
-                    confidenceBuffer, 
-                    System.currentTimeMillis(),
-                        depthWidth,
-                        depthHeight
-                );
             
                 // Get the camera pose matrix - this is the transformation matrix
                 float[] modelMatrix = new float[16];
@@ -398,7 +389,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
 
                 // To transform 2D depth pixels into 3D points we retrieve the intrinsic camera parameters
-                // corresponding to the depth miage. See more information about the depth values at
+                // corresponding to the depth image. See more information about the depth values at
                 int[] intrinsicsDimensions = intrinsics.getImageDimensions();
 
                 float fx = intrinsics.getFocalLength()[0] * depthWidth / intrinsicsDimensions[0];
@@ -592,55 +583,66 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
     public static final int FLOATS_PER_POINT = 4; // X,Y,Z,confidence.
     /**
      * Converts the raw depth image to depth values in meters
-     * @param depth The depth image
-     * @param confidence The confidence image
+     * @param deptthImage The depth image
+     * @param confidenceImage The confidence image
      * @return A FloatBuffer containing depth values in meters for each pixel
      */
-    private static FloatBuffer
-    convertRawDepthImageToMeters(Image depth, Image confidence) {
-        // Java uses big endian so change the endianness to ensure
-        // that the depth data is in the correct byte order.
-        final Image.Plane depthImagePlane = depth.getPlanes()[0];
-        ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
-        ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
-        depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
-        while (depthByteBufferOriginal.hasRemaining()) {
-            depthByteBuffer.put(depthByteBufferOriginal.get());
-        }
-        depthByteBuffer.rewind();
-        ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
+   private static FloatBuffer convertRawDepthImageToMeters(Image deptthImage, Image confidenceImage) {
+    // Extract the depth data
+    final Image.Plane depthImagePlane = deptthImage.getPlanes()[0];
+    ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
+    ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
+    depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+    depthByteBuffer.put(depthByteBufferOriginal);
+    depthByteBuffer.rewind();
 
-        // Get confidence data
-        final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
-        ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
-        ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
-        confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
-        while (confidenceBufferOriginal.hasRemaining()) {
-            confidenceBuffer.put(confidenceBufferOriginal.get());
-        }
-        confidenceBuffer.rewind();
+    // Convert to ShortBuffer for efficient processing
+    ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
 
-        // Get dimensions
-        int depthWidth = depth.getWidth();
-        int depthHeight = depth.getHeight();
-        
-        // Create output buffer for depth in meters
-        FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
-        Log.d("DEPTH_DATA_1", String.valueOf(depth.getPlanes().length));
-        Log.d("DEPTH_DATA_2", String.valueOf(depth.getPlanes()[0].getBuffer().capacity()));
-//        Log.d("DEPTH_DATA_3", String.valueOf(depth.getPlanes()[0]));
-        // Convert each depth value from millimeters to meters
-        for (int y = 0; y < depthHeight; y++) {
-            for (int x = 0; x < depthWidth; x++) {
-                int idx = y * depthWidth + x;
-                int depthMillimeters = depthBuffer.get(idx);
-               depthMeters.put(idx, depthMillimeters / 1000.0f);}
-            }
+    // Extract confidence data
+    final Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
+    ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
+    ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
+    confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
+    confidenceBuffer.put(confidenceBufferOriginal);
+    confidenceBuffer.rewind();
 
-        
-        depthMeters.rewind();
-        return depthMeters;
-    }
+    // Get dimensions
+    int depthWidth = deptthImage.getWidth();
+    int depthHeight = deptthImage.getHeight();
+    int rowStride = depthImagePlane.getRowStride() / 2;  // Divided by 2 for short units
+    int pixelStride = depthImagePlane.getPixelStride() / 2;
+
+
+
+    // Create output buffer for depth in meters
+    FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
+
+       for (int y = 0; y < depthHeight; y++) {
+           for (int x = 0; x < depthWidth; x++) {
+               int idx = y * rowStride + x * pixelStride;
+
+               // Get depth in millimeters
+               int depthMillimeters = depthBuffer.get(idx);
+
+               // Get confidence (0-255, normalize to 0.0 - 1.0)
+               float confidence = (confidenceBuffer.get(y * depthWidth + x) & 0xFF) / 255.0f;
+
+               // Validate depth and confidence
+               if (depthMillimeters <= 0 || depthMillimeters > 10000 || confidence < CONFIDENCE_THRESHOLD) {
+                   depthMeters.put(Float.NaN);
+                   continue;
+               }
+
+               // Convert to meters
+               depthMeters.put(depthMillimeters / 1000.0f);
+           }
+       }
+
+       depthMeters.rewind();
+    return depthMeters;
+}
+
     
     /**
      * Initialize and resume the AR session
@@ -665,13 +667,13 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
                 // Create and configure session
                 session = new Session(context);
-                if (!session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                if (!session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)) {
                     Log.e(TAG, "This device does not support 3D measuring with raw depth");
                     // Don't set session to null, let's try to continue with a regular ARCore session
                 }
                 
                 Config config = session.getConfig();
-                config.setDepthMode(Config.DepthMode.AUTOMATIC);
+                config.setDepthMode(Config.DepthMode.RAW_DEPTH_ONLY);
                 
                 // Try updating to different focus modes if applicable
                 config.setFocusMode(Config.FocusMode.AUTO);
