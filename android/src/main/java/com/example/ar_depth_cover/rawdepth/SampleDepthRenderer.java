@@ -372,6 +372,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 frame.getCamera().getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
                 
                 CameraIntrinsics intrinsics = frame.getCamera().getTextureIntrinsics();
+
                 Image.Plane depthImagePlane = depthImage.getPlanes()[0];
                 final Camera camera = frame.getCamera();
                 Anchor anchor = session.createAnchor(camera.getPose());
@@ -398,8 +399,10 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                         intrinsics.getPrincipalPoint()[1] * depthHeight / intrinsicsDimensions[1];
                 
                 // Convert raw depth images to depth in meters
-                FloatBuffer depthInMeters = convertRawDepthImageToMeters(depthImage, confidenceImage);
-                
+//                FloatBuffer depthInMeters = convertRawDepthImageToMeters(depthImage, confidenceImage);
+//
+                //
+                FloatBuffer depthInMeters = enhanceDepthWithRGB(depthImage,confidenceImage,cameraImage);
                 List<Float> sampledDepth = new ArrayList<>();
                 int stride = 1;
                 
@@ -585,61 +588,234 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
      * @param confidence The confidence image
      * @return A FloatBuffer containing depth values in meters for each pixel
      */
-   private static FloatBuffer convertRawDepthImageToMeters(Image depth, Image confidence) {
-    // Extract the depth data
-    final Image.Plane depthImagePlane = depth.getPlanes()[0];
-    ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
-    ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
-    depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
-    depthByteBuffer.put(depthByteBufferOriginal);
-    depthByteBuffer.rewind();
+    private static FloatBuffer convertRawDepthImageToMeters(Image depth, Image confidence) {
+        // Extract the depth data
+        final Image.Plane depthImagePlane = depth.getPlanes()[0];
+        ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
+        ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
+        depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        depthByteBuffer.put(depthByteBufferOriginal);
+        depthByteBuffer.rewind();
 
-    // Convert to ShortBuffer for efficient processing
-    ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
+        // Convert to ShortBuffer for efficient processing
+        ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
 
-    // Extract confidence data
-    final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
-    ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
-    ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
-    confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
-    confidenceBuffer.put(confidenceBufferOriginal);
-    confidenceBuffer.rewind();
+        // Extract confidence data
+        final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
+        ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
+        ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
+        confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        confidenceBuffer.put(confidenceBufferOriginal);
+        confidenceBuffer.rewind();
 
-    // Get dimensions
-    int depthWidth = depth.getWidth();
-    int depthHeight = depth.getHeight();
-    int rowStride = depthImagePlane.getRowStride() / 2;  // Divided by 2 for short units
-    int pixelStride = depthImagePlane.getPixelStride() / 2;
+        // Convert to ShortBuffer for efficient processing
+        ShortBuffer confidenceShortBuffer = confidenceBuffer.asShortBuffer();
 
-    // Confidence threshold (60%)
-    // int confidenceThreshold = 100;
+        // Get dimensions
+        int depthWidth = depth.getWidth();
+        int depthHeight = depth.getHeight();
+        int depthRowStride = depthImagePlane.getRowStride() / 2;  // Divided by 2 for short units
+        int depthPixelStride = depthImagePlane.getPixelStride() / 2;
 
-    // Create output buffer for depth in meters
-    FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
+        // Get confidence dimensions and strides
+        int confidenceRowStride = confidenceImagePlane.getRowStride() / 2;
+        int confidencePixelStride = confidenceImagePlane.getPixelStride() / 2;
 
-    for (int y = 0; y < depthHeight; y++) {
-        for (int x = 0; x < depthWidth; x++) {
-            int idx = y * rowStride + x * pixelStride;
+        // Create output buffer for depth in meters
+        FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
 
-            // Get depth in millimeters
-            int depthMillimeters = depthBuffer.get(idx);
-            
-            // Check for invalid depth values
-            if (depthMillimeters <= 0 || depthMillimeters > 10000) {  // 0 or >10m is considered invalid
-                depthMeters.put(Float.NaN);
-                continue;
-            }
+        // Get maximum possible confidence value (assuming 16-bit confidence values)
+        final short MAX_CONFIDENCE = 255;  // Adjust based on your camera's specifications
 
-          
+        // Set confidence threshold
+//        final short CONFIDENCE_THRESHOLD = (short)(MAX_CONFIDENCE * 0.95);
+
+        for (int y = 0; y < depthHeight; y++) {
+            for (int x = 0; x < depthWidth; x++) {
+                int depthIdx = y * depthRowStride + x * depthPixelStride;
+                int confidenceIdx = y * confidenceRowStride + x * confidencePixelStride;
+
+                // Get depth in millimeters
+                int depthMillimeters = depthBuffer.get(depthIdx);
+
+                // Get confidence value
+                short confidenceValue = confidenceShortBuffer.get(confidenceIdx);
+
+                // Check for invalid depth values or insufficient confidence (less than 80%)
+                if (depthMillimeters <= 0 ||
+                        depthMillimeters > 10000
+//                        ||  // 0 or >10m is considered invalid
+//                        confidenceValue < CONFIDENCE_THRESHOLD
+                ) {
+                    depthMeters.put(Float.NaN);
+                    continue;
+                }
+
                 depthMeters.put(depthMillimeters / 1000.0f); // Convert to meters
-           
+            }
         }
+
+        depthMeters.rewind();
+        return depthMeters;
     }
 
-    depthMeters.rewind();
-    return depthMeters;
-}
 
+
+    ///
+    private static FloatBuffer enhanceDepthWithRGB(Image depth, Image confidence, Image rgbImage) {
+        // Extract the depth data
+        final Image.Plane depthImagePlane = depth.getPlanes()[0];
+        ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
+        ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
+        depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        depthByteBuffer.put(depthByteBufferOriginal);
+        depthByteBuffer.rewind();
+        ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
+
+        // Extract confidence data
+        final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
+        ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
+        ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
+        confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
+        confidenceBuffer.put(confidenceBufferOriginal);
+        confidenceBuffer.rewind();
+        ShortBuffer confidenceShortBuffer = confidenceBuffer.asShortBuffer();
+
+        // Extract RGB data
+        Image.Plane[] rgbPlanes = rgbImage.getPlanes();
+        ByteBuffer yBuffer = rgbPlanes[0].getBuffer();
+        int yPixelStride = rgbPlanes[0].getPixelStride();
+        int yRowStride = rgbPlanes[0].getRowStride();
+
+        // Get dimensions
+        int depthWidth = depth.getWidth();
+        int depthHeight = depth.getHeight();
+        int depthRowStride = depthImagePlane.getRowStride() / 2;
+        int depthPixelStride = depthImagePlane.getPixelStride() / 2;
+
+        // For confidence
+        int confidenceRowStride = confidenceImagePlane.getRowStride() / 2;
+        int confidencePixelStride = confidenceImagePlane.getPixelStride() / 2;
+
+        // Create output buffer for depth in meters
+        FloatBuffer enhancedDepth = FloatBuffer.allocate(depthWidth * depthHeight);
+
+        // For confidence threshold
+        final short MAX_CONFIDENCE = 255;
+        final short CONFIDENCE_THRESHOLD = (short)(MAX_CONFIDENCE * 0.6);  // Lower threshold, we'll use RGB to help
+
+        // For edge detection from RGB
+        float[][] edgeMap = detectEdgesFromRGB(rgbImage, depthWidth, depthHeight);
+
+        // For depth processing
+        float[][] rawDepthMap = new float[depthHeight][depthWidth];
+        boolean[][] validDepthMap = new boolean[depthHeight][depthWidth];
+
+        // First pass: extract raw depth values and mark valid pixels
+        for (int y = 0; y < depthHeight; y++) {
+            for (int x = 0; x < depthWidth; x++) {
+                int depthIdx = y * depthRowStride + x * depthPixelStride;
+                int confidenceIdx = y * confidenceRowStride + x * confidencePixelStride;
+
+                int depthMillimeters = depthBuffer.get(depthIdx);
+                short confidenceValue = confidenceShortBuffer.get(confidenceIdx);
+
+                // Check validity with relaxed confidence threshold
+                if (depthMillimeters > 0 && depthMillimeters <= 10000
+//                        && confidenceValue >= CONFIDENCE_THRESHOLD
+
+                ) {
+
+                    rawDepthMap[y][x] = depthMillimeters / 1000.0f;
+                    validDepthMap[y][x] = true;
+                } else {
+                    rawDepthMap[y][x] = Float.NaN;
+                    validDepthMap[y][x] = false;
+                }
+            }
+        }
+
+        // Second pass: enhance depth using edge information and fill holes
+        for (int y = 0; y < depthHeight; y++) {
+            for (int x = 0; x < depthWidth; x++) {
+                // If depth is valid, use it directly
+                if (validDepthMap[y][x]) {
+                    enhancedDepth.put(rawDepthMap[y][x]);
+                    continue;
+                }
+
+                // We have invalid depth - let's try to recover using RGB and neighboring depth
+                if (edgeMap[y][x] > 0.3f) {
+                    // On an edge boundary - better to mark as invalid than interpolate across edge
+                    enhancedDepth.put(Float.NaN);
+                    continue;
+                }
+
+                // Try to interpolate from valid neighbors if not on an edge
+                float sum = 0;
+                int count = 0;
+
+                // Check 3x3 neighborhood (can be expanded for better results)
+                for (int ny = Math.max(0, y-1); ny <= Math.min(depthHeight-1, y+1); ny++) {
+                    for (int nx = Math.max(0, x-1); nx <= Math.min(depthWidth-1, x+1); nx++) {
+                        if (validDepthMap[ny][nx]) {
+                            sum += rawDepthMap[ny][nx];
+                            count++;
+                        }
+                    }
+                }
+
+                if (count >= 3) {  // At least 3 valid neighbors for reliable interpolation
+                    enhancedDepth.put(sum / count);
+                } else {
+                    enhancedDepth.put(Float.NaN);
+                }
+            }
+        }
+
+        enhancedDepth.rewind();
+        return enhancedDepth;
+    }
+
+    // Detect edges from RGB image to help with depth boundaries
+    private static float[][] detectEdgesFromRGB(Image rgbImage, int width, int height) {
+        float[][] edgeMap = new float[height][width];
+
+        // Get Y plane (luminance) for edge detection
+        Image.Plane yPlane = rgbImage.getPlanes()[0];
+        ByteBuffer yBuffer = yPlane.getBuffer();
+        int yPixelStride = yPlane.getPixelStride();
+        int yRowStride = yPlane.getRowStride();
+
+        // Simple Sobel edge detection
+        for (int y = 1; y < height - 1; y++) {
+            for (int x = 1; x < width - 1; x++) {
+                // Sample 3x3 neighborhood for Sobel operator
+                int topLeft = yBuffer.get((y-1) * yRowStride + (x-1) * yPixelStride) & 0xFF;
+                int top = yBuffer.get((y-1) * yRowStride + x * yPixelStride) & 0xFF;
+                int topRight = yBuffer.get((y-1) * yRowStride + (x+1) * yPixelStride) & 0xFF;
+
+                int left = yBuffer.get(y * yRowStride + (x-1) * yPixelStride) & 0xFF;
+                int right = yBuffer.get(y * yRowStride + (x+1) * yPixelStride) & 0xFF;
+
+                int bottomLeft = yBuffer.get((y+1) * yRowStride + (x-1) * yPixelStride) & 0xFF;
+                int bottom = yBuffer.get((y+1) * yRowStride + x * yPixelStride) & 0xFF;
+                int bottomRight = yBuffer.get((y+1) * yRowStride + (x+1) * yPixelStride) & 0xFF;
+
+                // Sobel X gradient
+                int gradientX = -topLeft - 2*left - bottomLeft + topRight + 2*right + bottomRight;
+
+                // Sobel Y gradient
+                int gradientY = -topLeft - 2*top - topRight + bottomLeft + 2*bottom + bottomRight;
+
+                // Edge magnitude
+                float magnitude = (float) Math.sqrt(gradientX * gradientX + gradientY * gradientY) / 1448.0f; // Normalize
+                edgeMap[y][x] = Math.min(1.0f, magnitude);
+            }
+        }
+
+        return edgeMap;
+    }
     
     /**
      * Initialize and resume the AR session
@@ -866,6 +1042,5 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             Thread.currentThread().interrupt();
         }
     }
-    
 
 } 

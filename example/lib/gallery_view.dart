@@ -11,46 +11,42 @@ class GalleryView extends StatefulWidget {
   State<GalleryView> createState() => _GalleryViewState();
 }
 
-class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStateMixin {
+class _GalleryViewState extends State<GalleryView>
+    with SingleTickerProviderStateMixin {
   List<ImageGroup> _imageGroups = [];
   bool _isLoading = true;
-  
+
   @override
   void initState() {
     super.initState();
     _loadImages();
   }
-  
-  @override
-  void dispose() {
-    super.dispose();
-  }
-  
+
   Future<void> _loadImages() async {
     setState(() {
       _isLoading = true;
     });
-    
+
     try {
       final appDir = await getExternalStorageDirectory();
       final arImagesDir = Directory('${appDir!.path}/Pictures/ar_images');
       log('arImagesDir: ${arImagesDir.path}', name: 'GalleryView');
-      
+
       if (!await arImagesDir.exists()) {
         await arImagesDir.create(recursive: true);
       }
-      
+
       // Get all files in the directory
       final files = await arImagesDir.list().toList();
-      
+
       // Filter for image files only and create simple groups (one file per group)
       final List<ImageGroup> groups = [];
-      
+
       for (var fileEntity in files) {
         if (fileEntity is File) {
           final filename = fileEntity.path.split('/').last;
           final extension = filename.split('.').last.toLowerCase();
-          
+
           // Check if it's an image file
           if (['jpg', 'jpeg', 'png'].contains(extension)) {
             // Create a timestamp from the file's modified time
@@ -61,14 +57,14 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
           }
         }
       }
-      
+
       // Sort by file modification time (newest first)
       groups.sort((a, b) {
         final fileA = a.cameraImage!;
         final fileB = b.cameraImage!;
         return fileB.lastModifiedSync().compareTo(fileA.lastModifiedSync());
       });
-      
+
       setState(() {
         _imageGroups = groups;
         _isLoading = false;
@@ -80,7 +76,7 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       });
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -100,39 +96,44 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _imageGroups.isEmpty
+      body:
+          _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _imageGroups.isEmpty
               ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.photo_library_outlined, size: 64, color: Colors.grey),
-                      const SizedBox(height: 16),
-                      const Text('No images saved yet', style: TextStyle(fontSize: 16)),
-                      const SizedBox(height: 24),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Return to Camera'),
-                      ),
-                    ],
-                  ),
-                )
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.photo_library_outlined,
+                      size: 64,
+                      color: Colors.grey,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'No images saved yet',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Return to Camera'),
+                    ),
+                  ],
+                ),
+              )
               : _buildImageGrid(),
     );
   }
-  
+
   Widget _buildImageGrid() {
-    final filteredGroups = _imageGroups
-        .where((group) => group.cameraImage != null)
-        .toList();
-    
+    final filteredGroups =
+        _imageGroups.where((group) => group.cameraImage != null).toList();
+
     if (filteredGroups.isEmpty) {
-      return const Center(
-        child: Text('No images available'),
-      );
+      return const Center(child: Text('No images available'));
     }
-    
+
     return RefreshIndicator(
       onRefresh: _loadImages,
       child: GridView.builder(
@@ -147,7 +148,7 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
         itemBuilder: (context, index) {
           final file = filteredGroups[index].cameraImage;
           if (file == null) return const SizedBox.shrink();
-          
+
           return InkWell(
             onTap: () => _showImageDetail(file),
             child: Card(
@@ -160,7 +161,11 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) {
                       return const Center(
-                        child: Icon(Icons.broken_image, size: 48, color: Colors.red),
+                        child: Icon(
+                          Icons.broken_image,
+                          size: 48,
+                          color: Colors.red,
+                        ),
                       );
                     },
                   ),
@@ -186,58 +191,63 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       ),
     );
   }
-  
+
   void _showImageDetail(File file) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(
-            title: Text(file.path.split('/').last),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.share),
-                onPressed: () => _shareImage(file),
-                tooltip: 'Share',
+        builder:
+            (context) => Scaffold(
+              appBar: AppBar(
+                title: Text(file.path.split('/').last),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.share),
+                    onPressed: () => _shareImage(file),
+                    tooltip: 'Share',
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete),
+                    onPressed: () {
+                      _deleteImage(file);
+                      Navigator.pop(context);
+                    },
+                    tooltip: 'Delete',
+                  ),
+                ],
               ),
-              IconButton(
-                icon: const Icon(Icons.delete),
-                onPressed: () {
-                  _deleteImage(file);
-                  Navigator.pop(context);
-                },
-                tooltip: 'Delete',
-              ),
-            ],
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              boundaryMargin: const EdgeInsets.all(20),
-              minScale: 0.5,
-              maxScale: 4.0,
-              child: Image.file(
-                file,
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.broken_image, size: 64, color: Colors.red),
-                        SizedBox(height: 16),
-                        Text('Failed to load image'),
-                      ],
-                    ),
-                  );
-                },
+              body: Center(
+                child: InteractiveViewer(
+                  boundaryMargin: const EdgeInsets.all(20),
+                  minScale: 0.5,
+                  maxScale: 4.0,
+                  child: Image.file(
+                    file,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.broken_image,
+                              size: 64,
+                              color: Colors.red,
+                            ),
+                            SizedBox(height: 16),
+                            Text('Failed to load image'),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
       ),
     );
   }
-  
+
   Future<void> _deleteImage(File file) async {
     try {
       await file.delete();
@@ -251,7 +261,7 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       }
     }
   }
-  
+
   Future<void> _shareImage(File file) async {
     try {
       await Share.shareXFiles([XFile(file.path)], text: 'AR Depth Image');
@@ -264,45 +274,49 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       }
     }
   }
-  
+
   void _showDeleteAllConfirmation() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete All Images'),
-        content: const Text(
-          'Are you sure you want to delete all saved images? This action cannot be undone.'
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('CANCEL'),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Delete All Images'),
+            content: const Text(
+              'Are you sure you want to delete all saved images? This action cannot be undone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _deleteAllImages();
+                },
+                child: const Text(
+                  'DELETE ALL',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _deleteAllImages();
-            },
-            child: const Text('DELETE ALL', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
     );
   }
-  
+
   Future<void> _deleteAllImages() async {
     try {
       setState(() {
         _isLoading = true;
       });
-      
+
       final appDir = await getApplicationDocumentsDirectory();
       final arImagesDir = Directory('${appDir.path}/ar_images');
-      
+
       if (await arImagesDir.exists()) {
         // Get all files in the directory
         final files = await arImagesDir.list().toList();
-        
+
         // Delete each file
         for (var entity in files) {
           if (entity is File) {
@@ -310,12 +324,12 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
           }
         }
       }
-      
+
       setState(() {
         _imageGroups = [];
         _isLoading = false;
       });
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -329,7 +343,7 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       setState(() {
         _isLoading = false;
       });
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -340,7 +354,7 @@ class _GalleryViewState extends State<GalleryView> with SingleTickerProviderStat
       }
     }
   }
-  
+
   String _formatTimestamp(String timestamp) {
     try {
       final ms = int.parse(timestamp);
@@ -357,6 +371,6 @@ class ImageGroup {
   File? depthImage;
   File? confidenceImage;
   File? cameraImage;
-  
+
   ImageGroup(this.timestamp);
-} 
+}
