@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,11 +9,7 @@ class ARView extends StatefulWidget {
   final DepthDataCallback? onDepthDataReceived;
   final bool logDepthOnly;
 
-  const ARView({
-    Key? key,
-    this.onDepthDataReceived,
-    this.logDepthOnly = true,
-  }) : super(key: key);
+  const ARView({super.key, this.onDepthDataReceived, this.logDepthOnly = true});
 
   @override
   State<ARView> createState() => _ARViewState();
@@ -34,13 +31,16 @@ class _ARViewState extends State<ARView> {
     switch (call.method) {
       case 'onDepthDataReceived':
         if (widget.onDepthDataReceived != null) {
-          final Map<String, dynamic> depthData = 
-              Map<String, dynamic>.from(call.arguments);
+          final Map<String, dynamic> depthData = Map<String, dynamic>.from(
+            call.arguments,
+          );
           widget.onDepthDataReceived!(depthData);
         }
         break;
       default:
-        print('Unknown method ${call.method}');
+        if (kDebugMode) {
+          print('Unknown method ${call.method}');
+        }
     }
   }
 

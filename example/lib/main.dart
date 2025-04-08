@@ -1,7 +1,7 @@
 import 'dart:developer';
 
 import 'package:ar_depth_cover/ar_view.dart';
-import 'package:ar_depth_cover_example/depthmap_visualization.dart';
+import 'package:ar_depth_cover_example/depth_visualizer_grid.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 
@@ -42,6 +42,9 @@ class _ARHomePageState extends State<ARHomePage> {
 
   // Depth data information
   Map<String, dynamic>? _depthData;
+
+  List<DepthImage> list = [];
+
   String _depthInfoText = 'No depth data received yet';
 
   // Add this variable to your _ARHomePageState class
@@ -170,6 +173,14 @@ class _ARHomePageState extends State<ARHomePage> {
         'originalImagePath': imagePath,
       };
 
+      DepthImage depthImage = DepthImage(
+        depthData: List<double>.from(_depthData!['depthImage']),
+        width: _depthData!['depthWidth'],
+        height: _depthData!['depthHeight'],
+        imagePath: _depthData!['imagePath'],
+      );
+      list.add(depthImage);
+
       // Convert to JSON and save to file
       final jsonString = jsonEncode(dataToSave);
       final file = File(filePath);
@@ -197,21 +208,23 @@ class _ARHomePageState extends State<ARHomePage> {
           IconButton(
             icon: const Icon(Icons.photo_library),
             tooltip: 'View Saved Images',
-            onPressed: () {
-              if (_depthData == null) return;
+            onPressed: () async {
+              if (_depthData == null || list.isEmpty) {
+                return;
+              }
+
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder:
-                      (context) => DepthHeatmapVisualizer(
-                        depthData: List<double>.from(_depthData!['depthImage']),
-                        height: _depthData!['depthHeight'],
-                        width: _depthData!['depthWidth'],
-                        imagePath: _depthData!['imagePath'],
-                        dataToSave: _depthData!,
-                      ),
+                      (context) =>
+                          DepthVisualizerGrid(depthImageList: List.from(list)),
                 ),
-              );
+              ).then((_) {
+                // Clear the original list after returning (optional)
+                list.clear();
+              });
+
               // Navigator.push(
               //   context,
               //   MaterialPageRoute(builder: (context) => GalleryView()),
