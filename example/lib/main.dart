@@ -166,6 +166,11 @@ class _ARHomePageState extends State<ARHomePage> {
         'viewMatrix': depthData['viewMatrix'],
         'projectionMatrix': depthData['projectionMatrix'],
         'transformMatrix': depthData['transformMatrix'],
+        // 'hasDifferentAspectRatio': depthData['hasDifferentAspectRatio'],
+        'cropTopNorm': depthData['cropTopNorm'],
+        'cropLeftNorm': depthData['cropLeftNorm'],
+        'cropWidthNorm': depthData['cropWidthNorm'],
+        'cropHeightNorm': depthData['cropHeightNorm'],
         'depthData': List<double>.from(depthData['depthImage']),
         'confidenceData': List<int>.from(
           depthData['confidenceImage']['planes'][0]['data'],

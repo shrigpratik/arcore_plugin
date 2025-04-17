@@ -18,17 +18,13 @@ package com.example.ar_depth_cover.rawdepth;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.content.Intent;
 import android.media.Image;
-import android.media.MediaRecorder;
-import android.net.Uri;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import android.widget.Toast;
 
 import com.example.ar_depth_cover.common.samplerender.CameraTextureShader;
 import com.example.ar_depth_cover.common.samplerender.SampleRender;
@@ -53,14 +49,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -358,7 +350,59 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
                 int depthWidth = depthImage.getWidth();
                 int depthHeight = depthImage.getHeight();
-            
+
+                int cpuImageWidth = cameraImage.getWidth();
+                int cpuImageHeight = cameraImage.getHeight();
+
+                float cpuAspect = (float) cpuImageWidth / cpuImageHeight;
+                float depthAspect = (float) depthWidth / depthHeight;
+
+                float cropLeft = 0, cropTop = 0, cropWidth = 0, cropHeight = 0;
+
+                if (cpuAspect > depthAspect) {
+                    // CPU image is wider → crop width
+                    float expectedCpuWidth = cpuImageHeight * depthAspect;
+                    cropWidth = cpuImageWidth - expectedCpuWidth;
+                    cropLeft = cropWidth / 2.0f;
+                } else if (cpuAspect < depthAspect) {
+                    // CPU image is taller → crop height
+                    float expectedCpuHeight = cpuImageWidth / depthAspect;
+                    cropHeight = cpuImageHeight - expectedCpuHeight;
+                    cropTop = cropHeight / 2.0f;
+                }
+
+                float cropLeftNorm = cropLeft / cpuImageWidth;
+                float cropTopNorm = cropTop / cpuImageHeight;
+                float cropWidthNorm = cropWidth / cpuImageWidth;
+                float cropHeightNorm = cropHeight / cpuImageHeight;
+
+
+
+                // ----- Intrinsics-based center shift correction -----
+                CameraIntrinsics intrinsics = frame.getCamera().getImageIntrinsics();
+                float[] principalPoint = intrinsics.getPrincipalPoint();  // cx, cy
+                int[] imageDimensions = intrinsics.getImageDimensions();  // width, height
+
+                float cxi = principalPoint[0];
+                float cyi = principalPoint[1];
+                int intrinsicWidth = imageDimensions[0];
+                int intrinsicHeight = imageDimensions[1];
+
+                // Calculate how much center is shifted from the middle (normalized)
+                float centerXOffset = (cxi / intrinsicWidth) - 0.5f;
+                float centerYOffset = (cyi / intrinsicHeight) - 0.5f;
+
+                // Apply intrinsics correction to crop
+                cropLeftNorm += centerXOffset;
+                cropTopNorm += centerYOffset;
+
+                // Clamp values to prevent invalid cropping
+                cropLeftNorm = Math.max(0, Math.min(1, cropLeftNorm));
+                cropTopNorm = Math.max(0, Math.min(1, cropTopNorm));
+                cropWidthNorm = Math.max(0, Math.min(1, cropWidthNorm));
+                cropHeightNorm = Math.max(0, Math.min(1, cropHeightNorm));
+
+
                 // Get the camera pose matrix - this is the transformation matrix
                 float[] modelMatrix = new float[16];
                 frame.getCamera().getPose().toMatrix(modelMatrix, 0);
@@ -371,7 +415,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 float[] projectionMatrix = new float[16];
                 frame.getCamera().getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
                 
-                CameraIntrinsics intrinsics = frame.getCamera().getTextureIntrinsics();
 
                 Image.Plane depthImagePlane = depthImage.getPlanes()[0];
                 final Camera camera = frame.getCamera();
@@ -427,13 +470,18 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                         cy,
                         confidenceImage,
                         imagePath,
-                        depthTimestamp
+                        depthTimestamp,
+                        cropLeftNorm,
+                        cropTopNorm,
+                        cropWidthNorm,
+                        cropHeightNorm
                     );
                 }
+
             } else {
                 Log.d(TAG, "Skipping depth processing - same timestamp as before: " + depthTimestamp);
             }
-        } catch (NotYetAvailableException e) {
+          } catch (NotYetAvailableException e) {
             // Depth is not available yet
             Log.w(TAG, "Depth data not yet available");
         } catch (Exception e) {
@@ -455,7 +503,12 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             float cy,
             Image confidenceImage,
             String cameraImagePath,
-            long timestamp) {
+            long timestamp,
+            float cropLeftNorm,
+            float cropTopNorm,
+            float cropWidthNorm,
+            float cropHeightNorm
+            ) {
             
         if (methodChannel == null) {
             Log.w(TAG, "Method channel not available to send depth data");
@@ -478,6 +531,10 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             combinedData.put("principalPointY", cy);
             combinedData.put("depthImage", depthArray);
             combinedData.put("imagePath", cameraImagePath);
+            combinedData.put("cropTopNorm",cropTopNorm);
+            combinedData.put("cropLeftNorm",cropLeftNorm);
+            combinedData.put("cropWidthNorm",cropWidthNorm);
+            combinedData.put("cropHeightNorm",cropHeightNorm);
             addRawImageDataToMap(combinedData, "confidenceImage", confidenceImage);
 
             // Add the transformation matrices if available
