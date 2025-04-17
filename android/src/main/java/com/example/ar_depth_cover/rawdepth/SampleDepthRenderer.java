@@ -64,16 +64,10 @@ import com.example.ar_depth_cover.common.helpers.MultiFrameDepthProcessor;
 public class SampleDepthRenderer implements SampleRender.Renderer {
     private static final String TAG = SampleDepthRenderer.class.getSimpleName();
     private static final String CHANNEL_NAME = "ar_depth_cover/depth_data";
-    private MultiFrameDepthProcessor depthProcessor = new MultiFrameDepthProcessor();
-
-
     /**
      * Interface for listening to recording state changes
      */
-    public interface RecordingStateListener {
-        void onRecordingStateChanged(boolean isRecording);
-    }
-    
+
     // The GL Surface view used for rendering
     private final GLSurfaceView glSurfaceView;
     
@@ -120,8 +114,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private volatile String lastSavedImagePath = null;
 
-    // Recording state listener
-    private RecordingStateListener recordingStateListener;
 
     /**
      * Constructs a SampleDepthRenderer with the given context.
@@ -179,7 +171,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         cameraShader = new CameraTextureShader(rotationToTry);
         
         // Add explicit error checking after shader creation
-        if (cameraShader == null || cameraShader.getTextureId() <= 0) {
+        if (cameraShader.getTextureId() <= 0) {
             Log.e(TAG, "Failed to create camera texture shader or invalid texture ID");
         } else {
             Log.d(TAG, "Camera shader created successfully with texture ID: " + cameraShader.getTextureId());
@@ -292,10 +284,10 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 
                 // Process depth data if camera is tracking
                 Camera camera = frame.getCamera();
-                if (camera.getTrackingState() == TrackingState.TRACKING) {
-                    // Uncomment if you want to process depth data every frame
-                    // processDepthData(frame);
-                }
+                //Uncomment if you want to process depth data every frame
+//                if (camera.getTrackingState() == TrackingState.TRACKING) {
+//                     processDepthData(frame);
+//                }
             } catch (Exception e) {
                 Log.e(TAG, "Exception on the OpenGL thread", e);
             }
@@ -312,16 +304,13 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 Log.e(TAG, "Cannot process depth data: session is null");
                 return;
             }
-            
+
             try {
                 if (currentFrame != null) {
                     Camera camera = currentFrame.getCamera();
                     if (camera.getTrackingState() == TrackingState.TRACKING) {
                         Log.d(TAG, "Processing depth data manually");
-                        
-                  
                         processDepthData(currentFrame);
-    
 
                     } else {
                         Log.w(TAG, "Cannot process depth data: camera not tracking");
@@ -346,7 +335,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
             if (depthTimestamp != depthImage.getTimestamp()) {
                 depthTimestamp = depthImage.getTimestamp();
                 depthReceived = true;
- 
 
                 int depthWidth = depthImage.getWidth();
                 int depthHeight = depthImage.getHeight();
@@ -375,8 +363,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 float cropTopNorm = cropTop / cpuImageHeight;
                 float cropWidthNorm = cropWidth / cpuImageWidth;
                 float cropHeightNorm = cropHeight / cpuImageHeight;
-
-
 
                 // ----- Intrinsics-based center shift correction -----
                 CameraIntrinsics intrinsics = frame.getCamera().getImageIntrinsics();
@@ -414,9 +400,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 // Get projection matrix - useful for projecting 3D points to 2D screen coordinates
                 float[] projectionMatrix = new float[16];
                 frame.getCamera().getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
-                
 
-                Image.Plane depthImagePlane = depthImage.getPlanes()[0];
                 final Camera camera = frame.getCamera();
                 Anchor anchor = session.createAnchor(camera.getPose());
                 anchor.getPose().toMatrix(modelMatrix, 0);
@@ -426,12 +410,9 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 
                 // Use the last saved image path (might be null if saving is still in progress)
                 String imagePath = lastSavedImagePath;
-                
-
-                Image.Plane confidenceImagePlane = confidenceImage.getPlanes()[0];
 
                 // To transform 2D depth pixels into 3D points we retrieve the intrinsic camera parameters
-                // corresponding to the depth miage. See more information about the depth values at
+                // corresponding to the depth image. See more information about the depth values at
                 int[] intrinsicsDimensions = intrinsics.getImageDimensions();
 
                 float fx = intrinsics.getFocalLength()[0] * depthWidth / intrinsicsDimensions[0];
@@ -440,11 +421,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                         intrinsics.getPrincipalPoint()[0] * depthWidth / intrinsicsDimensions[0];
                 float cy =
                         intrinsics.getPrincipalPoint()[1] * depthHeight / intrinsicsDimensions[1];
-                
-                // Convert raw depth images to depth in meters
-//                FloatBuffer depthInMeters = convertRawDepthImageToMeters(depthImage, confidenceImage);
-//
-                //
+
                 FloatBuffer depthInMeters = enhanceDepthWithRGB(depthImage,confidenceImage,cameraImage);
                 List<Float> sampledDepth = new ArrayList<>();
                 int stride = 1;
@@ -638,87 +615,12 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
         }
     }
 
-    public static final int FLOATS_PER_POINT = 4; // X,Y,Z,confidence.
-    /**
+     /**
      * Converts the raw depth image to depth values in meters
      * @param depth The depth image
      * @param confidence The confidence image
      * @return A FloatBuffer containing depth values in meters for each pixel
      */
-    private static FloatBuffer convertRawDepthImageToMeters(Image depth, Image confidence) {
-        // Extract the depth data
-        final Image.Plane depthImagePlane = depth.getPlanes()[0];
-        ByteBuffer depthByteBufferOriginal = depthImagePlane.getBuffer();
-        ByteBuffer depthByteBuffer = ByteBuffer.allocate(depthByteBufferOriginal.capacity());
-        depthByteBuffer.order(ByteOrder.LITTLE_ENDIAN);
-        depthByteBuffer.put(depthByteBufferOriginal);
-        depthByteBuffer.rewind();
-
-        // Convert to ShortBuffer for efficient processing
-        ShortBuffer depthBuffer = depthByteBuffer.asShortBuffer();
-
-        // Extract confidence data
-        final Image.Plane confidenceImagePlane = confidence.getPlanes()[0];
-        ByteBuffer confidenceBufferOriginal = confidenceImagePlane.getBuffer();
-        ByteBuffer confidenceBuffer = ByteBuffer.allocate(confidenceBufferOriginal.capacity());
-        confidenceBuffer.order(ByteOrder.LITTLE_ENDIAN);
-        confidenceBuffer.put(confidenceBufferOriginal);
-        confidenceBuffer.rewind();
-
-        // Convert to ShortBuffer for efficient processing
-        ShortBuffer confidenceShortBuffer = confidenceBuffer.asShortBuffer();
-
-        // Get dimensions
-        int depthWidth = depth.getWidth();
-        int depthHeight = depth.getHeight();
-        int depthRowStride = depthImagePlane.getRowStride() / 2;  // Divided by 2 for short units
-        int depthPixelStride = depthImagePlane.getPixelStride() / 2;
-
-        // Get confidence dimensions and strides
-        int confidenceRowStride = confidenceImagePlane.getRowStride() / 2;
-        int confidencePixelStride = confidenceImagePlane.getPixelStride() / 2;
-
-        // Create output buffer for depth in meters
-        FloatBuffer depthMeters = FloatBuffer.allocate(depthWidth * depthHeight);
-
-        // Get maximum possible confidence value (assuming 16-bit confidence values)
-        final short MAX_CONFIDENCE = 255;  // Adjust based on your camera's specifications
-
-        // Set confidence threshold
-//        final short CONFIDENCE_THRESHOLD = (short)(MAX_CONFIDENCE * 0.95);
-
-        for (int y = 0; y < depthHeight; y++) {
-            for (int x = 0; x < depthWidth; x++) {
-                int depthIdx = y * depthRowStride + x * depthPixelStride;
-                int confidenceIdx = y * confidenceRowStride + x * confidencePixelStride;
-
-                // Get depth in millimeters
-                int depthMillimeters = depthBuffer.get(depthIdx);
-
-                // Get confidence value
-                short confidenceValue = confidenceShortBuffer.get(confidenceIdx);
-
-                // Check for invalid depth values or insufficient confidence (less than 80%)
-                if (depthMillimeters <= 0 ||
-                        depthMillimeters > 10000
-//                        ||  // 0 or >10m is considered invalid
-//                        confidenceValue < CONFIDENCE_THRESHOLD
-                ) {
-                    depthMeters.put(Float.NaN);
-                    continue;
-                }
-
-                depthMeters.put(depthMillimeters / 1000.0f); // Convert to meters
-            }
-        }
-
-        depthMeters.rewind();
-        return depthMeters;
-    }
-
-
-
-    ///
     private static FloatBuffer enhanceDepthWithRGB(Image depth, Image confidence, Image rgbImage) {
         // Extract the depth data
         final Image.Plane depthImagePlane = depth.getPlanes()[0];
@@ -740,9 +642,6 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
 
         // Extract RGB data
         Image.Plane[] rgbPlanes = rgbImage.getPlanes();
-        ByteBuffer yBuffer = rgbPlanes[0].getBuffer();
-        int yPixelStride = rgbPlanes[0].getPixelStride();
-        int yRowStride = rgbPlanes[0].getRowStride();
 
         // Get dimensions
         int depthWidth = depth.getWidth();
@@ -778,11 +677,7 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 short confidenceValue = confidenceShortBuffer.get(confidenceIdx);
 
                 // Check validity with relaxed confidence threshold
-                if (depthMillimeters > 0 && depthMillimeters <= 10000
-//                        && confidenceValue >= CONFIDENCE_THRESHOLD
-
-                ) {
-
+                if (depthMillimeters > 0 && depthMillimeters <= 10000) {
                     rawDepthMap[y][x] = depthMillimeters / 1000.0f;
                     validDepthMap[y][x] = true;
                 } else {
@@ -1052,9 +947,9 @@ public class SampleDepthRenderer implements SampleRender.Renderer {
                 int b = (int)(yValue + 1.772f * uValue);
                 
                 // Clamp RGB values
-                r = r > 255 ? 255 : (r < 0 ? 0 : r);
-                g = g > 255 ? 255 : (g < 0 ? 0 : g);
-                b = b > 255 ? 255 : (b < 0 ? 0 : b);
+                r = r > 255 ? 255 : (Math.max(r, 0));
+                g = g > 255 ? 255 : (Math.max(g, 0));
+                b = b > 255 ? 255 : (Math.max(b, 0));
                 
                 // Create ARGB color
                 int color = android.graphics.Color.argb(255, r, g, b);
